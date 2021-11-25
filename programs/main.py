@@ -356,8 +356,7 @@ def main():
     reanalysis.preprocess()
     print(reanalysis.ds)
 
-    ds = xr.open_mfdataset(rp_dir, combine='nested',
-                           coords='minimal', engine='netcdf4')
+    ds = xr.open_dataset(rp_dir, engine='')
     gcm = MIROC6(ds)
     gcm.preprocess()
     print(gcm.ds)
