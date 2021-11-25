@@ -11,10 +11,9 @@ import pandas as pd
 import numpy as np
 import datetime
 from time import time
-from math import sqrt
 from glob import glob
 import os
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 
 from multiprocessing import Pool
 
@@ -30,13 +29,10 @@ LONBOUND = [95, 155]
 STARTDATE = '1970-01-01'
 ENDDATE = '2015-12-31'
 
-Evaluating_indices = ['mean', 'bias', 'R', 'RMSE', 'stdev']
-
-
 grid_dir = '../downloads/JRA/1981-01-01.glob1'
-rp_dir = '../downloads/GCMs/*/*.nc'
+rp_dir = '../downloads/GCMs/**/*.nc'
 
-write_dir = '../output/preprocessed_gcms'
+write_dir_base = '../interpolated_gcms'
 
 
 '''===================for testing=================='''
@@ -52,7 +48,7 @@ bnd = [None, None]
 # the default setting shoud be theirselves.
 # the default should be like: STARTDATE = STARTDATE
 STARTDATE = '1981-01-01'
-ENDDATE = '1981-12-31'
+ENDDATE = '1984-01-01'
 
 '''-----2-----'''
 timeMeasurement = True
@@ -68,8 +64,8 @@ def measureRunTime(func):
         start = time()
         ret = func(*args, **kwargs)
         end = time()
-        elapsed = end - start
-        print(f'func \'{func.__name__ }\' run time {elapsed} seconds')
+        print(
+            f'func \'{func.__name__ }\' run time {end - start:04f} seconds, {(end-start)/60 :03f} min')
         return ret
     return timer if timeMeasurement is True else func
 
@@ -92,42 +88,6 @@ class Point():
             raise ValueError(
                 'need to know the lat, lon, and source to get the value. Now the three are {if self.source}, {if self.lat}, {if self.lon}!')
         return value
-
-
-class ModelPair():
-    def __init__(self, referModelData_1_dim, selfModelData_1_dim):
-        self.refer = referModelData_1_dim
-        self.model = selfModelData_1_dim
-
-    def error(self):
-        return np.array(self.model - self.refer)
-
-    def bias(self):
-        return self.error().mean()
-
-    def R(self):
-        return np.corrcoef(self.refer, self.model)[0][1]
-    # using R[0][1] is because R is a 2 by 2 matrix. which includes Rxx,Rxy,Ryx,Ryy. And we only use Rxy (equals to Ryx)
-
-    def RMSE(self):
-        return sqrt(np.square(self.error()).sum()/len(self.refer))
-
-    def stdev(self):
-        return np.std(self.error())
-
-    def mean(self):
-        return np.array(self.model).mean()
-
-    def indices(self, **kwargs):
-        dictionary = {
-            'mean': self.mean(),
-            'bias': self.bias(),
-            'R': self.R(),
-            "RMSE": self.RMSE(),
-            'stdev': self.stdev()
-        }
-
-        return dictionary
 
 
 def newVal(weights, values):
@@ -222,8 +182,8 @@ def interpolatedMap(grid_ds, rp_ds, time, bnd: list = bnd, exponent=EXPONENT, mo
         if xbnd and i >= xbnd:
             break
         if i % 10 == 0:
+            print(f"gcm {modelType} [{i} of {len(data)}] is over")
 
-            print(f"gcm {modelType} [{i}] is over")
     data = data[:, :, np.newaxis]
     if outputDataType == 'dataarray':
 
@@ -254,7 +214,7 @@ def interpolatedDataset(grid_ds, rp_ds, startTime=STARTDATE, endTime=ENDDATE, mo
 
     timeIdx = 0
     rp_ds = rp_ds.sel(time=slice(startTime, endTime))
-    # print("dfdf")
+
     # print(rp_ds)
     times = rp_ds['time'].to_index()
     # print(times)
@@ -265,41 +225,9 @@ def interpolatedDataset(grid_ds, rp_ds, startTime=STARTDATE, endTime=ENDDATE, mo
         new = interpolatedMap(grid_ds, rp_ds.sel(
             time=times[timeIdx]), times[timeIdx:timeIdx+1], modelType=modelType)
         concacted = xr.concat([concacted, new], dim='time')
-
+        print(
+            f"interpolation and concaction for {startTime} to {endTime} is over")
     return concacted
-
-
-def comparision(refer_ds, interpolated_ds_list: list, startTime=STARTDATE, endTime=ENDDATE):
-
-    referData_1_dim = np.array(refer_ds.sel(
-        time=slice(startTime, endTime)).uas).ravel()
-
-    modelData_list = [np.array(ds.sel(time=slice(startTime, endTime)).uas).ravel()
-                      for ds in interpolated_ds_list]
-
-    # the modelData_list includes lists of data of different models
-    # which means a list of Models' data's list
-
-    # while a modelData_1_dim is an unit in modelData_list
-
-    output_index = [idx for idx in Evaluating_indices]
-    output_data = np.array([])
-    # print(refer_ds)
-    # print(interpolated_ds_list[0])
-    for modelData_1_dim in modelData_list:
-
-        pair = ModelPair(referData_1_dim, modelData_1_dim)
-
-        indices_list = np.array(
-            [v for v in pair.indices().values()]).reshape(-1, 1)
-
-        output_data = np.append(output_data, indices_list,
-                                axis=1) if output_data.size > 0 else np.array(indices_list)
-
-    df = pd.DataFrame(
-        output_data, index=output_index, columns=list(range(len(modelData_list))))
-
-    return df
 
 
 def preprocessed(ds, modelType='', startdate=None, enddate=None):
@@ -356,29 +284,24 @@ def preprocessed(ds, modelType='', startdate=None, enddate=None):
 
 
 def main(args):
+    # interpolate one month of data
+    grid_ds, file, modelType, startdate, enddate, valueType = args[
+        0], args[1], args[2], args[3], args[4], args[5]
 
-    # grid_ds = xr.open_dataset(grid_dir, engine='cfgrib')
-    # grid_ds = xr.open_mfdataset(
-    #     grid_dir, concat_dim="time", combine="nested", coords='minimal', engine='cfgrib')
-    # grid_ds = preprocessed(grid_ds, modelType='JRA')
-
-    # args = ((filepath, os.path.basename(os.path.dirname(filepath)))
-    #         for filepath in glob(rp_dir))
-    # print('here1')
-    grid_ds, file, modelType, startdate, enddate = args[0], args[1], args[2], args[3], args[4]
-    # print('here2')
     rp_ds = xr.open_dataset(file, engine='h5netcdf')
-    # print('here3')
 
     rp_ds = preprocessed(rp_ds, modelType=modelType,
                          startdate=startdate, enddate=enddate)
-    # print(rp_ds, modelType)
 
     out = interpolatedDataset(
         grid_ds, rp_ds, modelType=modelType, startTime=startdate, endTime=enddate)
 
-    print(out)
-    return out
+    write_dir = write_dir_base + f"/{modelType}/{valueType}"
+    if not os.path.exists(write_dir):
+        os.makedirs(write_dir)
+
+    out.to_netcdf(
+        write_dir + f"/{modelType}_{startdate}_{valueType}.nc", engine="h5netcdf")
     # return 0
 
     # print(comparision(grid_ds, [out, out]))
@@ -392,23 +315,28 @@ if __name__ == '__main__':
     grid_ds = preprocessed(grid_ds, modelType='JRA')
     grid_ds = grid_ds.isel(time=0)
 
-    startdate_list = pd.date_range("1981-01-01", "1981-02-10", freq="D")
-    enddate_list = pd.date_range("1981-01-01", "1981-02-10", freq="D")
+    startdate_list = pd.date_range(STARTDATE, ENDDATE, freq="MS")
+    # enddate_list = startdate_list+datetime.timedelta(days=1)
+    enddate_list = pd.date_range(STARTDATE, ENDDATE, freq="M")
+    # a list of month start date
 
     arg_list = []
 
-    for filepath in glob(rp_dir):
+    for filepath in glob(rp_dir, recursive=True):
         for startdate, enddate in zip(startdate_list, enddate_list):
+            valueType = os.path.basename(os.path.dirname(filepath))
+            modelType = os.path.basename(
+                os.path.dirname(os.path.dirname(filepath)))
 
-            args = [grid_ds, filepath, os.path.basename(os.path.dirname(filepath)),
-                    startdate, enddate]
+            args = (grid_ds, filepath, modelType,
+                    startdate, enddate, valueType)
             arg_list.append(args)
 
-    # print(len(arg_list))
+    # for args in arg_list:
+    #     print(args[1:])
     t1 = time()
     pool = Pool()
-
-    res = pool.map(main, arg_list)
+    pool.map(main, arg_list)
     t2 = time()
-    # print(res)
+
     print(f'run time is {t2-t1:.04f} sec')
