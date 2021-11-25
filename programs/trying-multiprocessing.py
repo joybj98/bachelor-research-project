@@ -33,7 +33,7 @@ ENDDATE = '2015-12-31'
 Evaluating_indices = ['mean', 'bias', 'R', 'RMSE', 'stdev']
 
 
-grid_dir = '../downloads/1981-2005_u/u_new/1981-01-01.glob1'
+grid_dir = '../downloads/JRA/1981-01-01.glob1'
 rp_dir = '../downloads/GCMs/*/*.nc'
 
 write_dir = '../output/preprocessed_gcms'
@@ -45,14 +45,14 @@ write_dir = '../output/preprocessed_gcms'
 '''values in each Map'''
 # the default setting shoud be [None, None]
 bnd = [None, None]
-bnd = [10, 10]
+# bnd = [10, 10]
 # these limit the program only to predict few points for each time step
 
 '''-----1-----'''
 # the default setting shoud be theirselves.
 # the default should be like: STARTDATE = STARTDATE
 STARTDATE = '1981-01-01'
-ENDDATE = '1981-01-01'
+ENDDATE = '1981-12-31'
 
 '''-----2-----'''
 timeMeasurement = True
@@ -61,31 +61,6 @@ timeMeasurement = True
 '''-----3-----'''
 outputDataType = 'dataset'
 # can only set as 'dataarray' or 'dataset'
-
-
-def main(args):
-
-    # grid_ds = xr.open_dataset(grid_dir, engine='cfgrib')
-    # grid_ds = xr.open_mfdataset(
-    #     grid_dir, concat_dim="time", combine="nested", coords='minimal', engine='cfgrib')
-    # grid_ds = preprocessed(grid_ds, modelType='JRA')
-
-    # args = ((filepath, os.path.basename(os.path.dirname(filepath)))
-    #         for filepath in glob(rp_dir))
-    # print('here1')
-    grid_ds, file, modelType = args[0], args[1], args[2]
-    # print('here2')
-    rp_ds = xr.open_dataset(file, engine='h5netcdf')
-    # print('here3')
-
-    rp_ds = preprocessed(rp_ds, modelType=modelType)
-
-    out = interpolatedDataset(grid_ds, rp_ds)
-
-    print(out)
-    return out
-
-    # print(comparision(grid_ds, [out, out]))
 
 
 def measureRunTime(func):
@@ -209,8 +184,8 @@ def findNearestPoints(rp_ds, pp_loc, N=N):
     return res
 
 
-@ measureRunTime
-def interpolatedMap(grid_ds, rp_ds, time, bnd: list = bnd, exponent=EXPONENT):
+# @ measureRunTime
+def interpolatedMap(grid_ds, rp_ds, time, bnd: list = bnd, exponent=EXPONENT, modelType=None):
     # given (a grid map at one time step) and (a rp map at one time step), pridict the value of each point on the grid
 
     # grid_ds = grid_ds.isel(time=0)
@@ -241,14 +216,14 @@ def interpolatedMap(grid_ds, rp_ds, time, bnd: list = bnd, exponent=EXPONENT):
             # print(f"[{i}][{j}] is over with value {data[i][j]}")
             # print(f"[{i}][{j}] is over")
 
-            if ybnd:
-                if j >= ybnd:
-                    break
-
-        if xbnd:
-            if i >= xbnd:
+            if ybnd and j >= ybnd:
                 break
-        print(f"[{i}] is over")
+
+        if xbnd and i >= xbnd:
+            break
+        if i % 10 == 0:
+
+            print(f"gcm {modelType} [{i}] is over")
     data = data[:, :, np.newaxis]
     if outputDataType == 'dataarray':
 
@@ -275,17 +250,20 @@ def interpolatedMap(grid_ds, rp_ds, time, bnd: list = bnd, exponent=EXPONENT):
 
 
 @ measureRunTime
-def interpolatedDataset(grid_ds, rp_ds, startTime=STARTDATE, endTime=ENDDATE):
+def interpolatedDataset(grid_ds, rp_ds, startTime=STARTDATE, endTime=ENDDATE, modelType=None):
 
     timeIdx = 0
     rp_ds = rp_ds.sel(time=slice(startTime, endTime))
+    # print("dfdf")
+    # print(rp_ds)
     times = rp_ds['time'].to_index()
+    # print(times)
     concacted = interpolatedMap(grid_ds, rp_ds.sel(
-        time=times[0]), times[:1])
+        time=times[0]), times[:1], modelType=modelType)
     for timeIdx in range(1, len(times)):
 
         new = interpolatedMap(grid_ds, rp_ds.sel(
-            time=times[timeIdx]), times[timeIdx:timeIdx+1])
+            time=times[timeIdx]), times[timeIdx:timeIdx+1], modelType=modelType)
         concacted = xr.concat([concacted, new], dim='time')
 
     return concacted
@@ -324,7 +302,7 @@ def comparision(refer_ds, interpolated_ds_list: list, startTime=STARTDATE, endTi
     return df
 
 
-def preprocessed(ds, modelType=''):
+def preprocessed(ds, modelType='', startdate=None, enddate=None):
     def JRA_preprocess(ds):
         ds = ds.rename(
             {'u': 'uas', 'latitude': 'lat', 'longitude': 'lon'})
@@ -335,9 +313,11 @@ def preprocessed(ds, modelType=''):
         return ds
 
     def MRI_preprocess(ds):
+
         ds = ds.drop_vars(['time_bnds', 'lon_bnds', 'lat_bnds'])
         # ds = droppingVariablesOfds(ds,  mode='GCM')
         # ds = droppingVariablesOfds(ds, 5)
+
         ds = ds.transpose('lat', 'lon', 'time')
 
         return ds
@@ -347,6 +327,7 @@ def preprocessed(ds, modelType=''):
 
     def CNRM_ESM_preprocess(ds):
         ds = ds.drop_vars(['time_bounds'])
+
         ds = ds.transpose('lat', 'lon', 'time')
         return ds
 
@@ -362,12 +343,45 @@ def preprocessed(ds, modelType=''):
                   'MIROC6': MIROC6_preprpocess,
                   'CNRM-ESM2-1': CNRM_ESM_preprocess}
 
-    def main_preprocess(ds, modelType=modelType):
+    def main_preprocess(ds, modelType=modelType, startdate=startdate, enddate=enddate):
+        if startdate and enddate:
+            ds = ds.sel(time=slice(startdate, enddate))
+
         ds = model_list.get(modelType, unknown_preprocess)(ds)
+
         return ds
     print(f'{modelType} has been preprocessed')
 
     return main_preprocess(ds)
+
+
+def main(args):
+
+    # grid_ds = xr.open_dataset(grid_dir, engine='cfgrib')
+    # grid_ds = xr.open_mfdataset(
+    #     grid_dir, concat_dim="time", combine="nested", coords='minimal', engine='cfgrib')
+    # grid_ds = preprocessed(grid_ds, modelType='JRA')
+
+    # args = ((filepath, os.path.basename(os.path.dirname(filepath)))
+    #         for filepath in glob(rp_dir))
+    # print('here1')
+    grid_ds, file, modelType, startdate, enddate = args[0], args[1], args[2], args[3], args[4]
+    # print('here2')
+    rp_ds = xr.open_dataset(file, engine='h5netcdf')
+    # print('here3')
+
+    rp_ds = preprocessed(rp_ds, modelType=modelType,
+                         startdate=startdate, enddate=enddate)
+    # print(rp_ds, modelType)
+
+    out = interpolatedDataset(
+        grid_ds, rp_ds, modelType=modelType, startTime=startdate, endTime=enddate)
+
+    print(out)
+    return out
+    # return 0
+
+    # print(comparision(grid_ds, [out, out]))
 
 
 if __name__ == '__main__':
@@ -378,16 +392,23 @@ if __name__ == '__main__':
     grid_ds = preprocessed(grid_ds, modelType='JRA')
     grid_ds = grid_ds.isel(time=0)
 
-    arg_list = []
-    for filepath in glob(rp_dir):
-        args = [grid_ds, filepath, os.path.basename(os.path.dirname(filepath))]
-        arg_list.append(args)
+    startdate_list = pd.date_range("1981-01-01", "1981-02-10", freq="D")
+    enddate_list = pd.date_range("1981-01-01", "1981-02-10", freq="D")
 
-    # print(args)
+    arg_list = []
+
+    for filepath in glob(rp_dir):
+        for startdate, enddate in zip(startdate_list, enddate_list):
+
+            args = [grid_ds, filepath, os.path.basename(os.path.dirname(filepath)),
+                    startdate, enddate]
+            arg_list.append(args)
+
+    # print(len(arg_list))
     t1 = time()
     pool = Pool()
 
     res = pool.map(main, arg_list)
     t2 = time()
-    print(res)
+    # print(res)
     print(f'run time is {t2-t1:.04f} sec')
