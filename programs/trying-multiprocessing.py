@@ -47,8 +47,8 @@ bnd = [None, None]
 '''-----1-----'''
 # the default setting shoud be theirselves.
 # the default should be like: STARTDATE = STARTDATE
-STARTDATE = '1981-01-01'
-ENDDATE = '1984-01-01'
+STARTDATE = '2001-01-01'
+ENDDATE = '2007-01-01'
 
 '''-----2-----'''
 timeMeasurement = True
@@ -71,7 +71,7 @@ def measureRunTime(func):
 
 
 class Point():
-    def __init__(self, lat=None, lon=None, source=None):
+    def __init__(self, lat=None, lon=None, source=None, variableType=None):
         self.lat = float(lat)
         self.lon = float(lon)
         self.dist = float('inf')
@@ -79,14 +79,15 @@ class Point():
         self.loc = np.array([lat, lon])
         # self.idx = []
         self.source = source
+        self.type = variableType
 
     def getValue(self):
-        if self.source and self.lat and self.lon:
+        if self.source and self.lat and self.lon and self.type:
             value = float(self.source.sel(
-                lat=self.lat, lon=self.lon, method='nearest', tolerance=0.01).uas)
+                lat=self.lat, lon=self.lon, method='nearest', tolerance=0.01)[self.type])
         else:
             raise ValueError(
-                'need to know the lat, lon, and source to get the value. Now the three are {if self.source}, {if self.lat}, {if self.lon}!')
+                'need to know the lat, lon, source and variableType to get the value. Now the three are {if self.source}, {if self.lat}, {if self.lon}, {if self.type}!')
         return value
 
 
@@ -103,9 +104,10 @@ def droppingVariablesOfds(ds, distToBound=0):
     return ds.isel(lat=lat_idxs, lon=lon_idxs)
 
 
-def findNearestPoints(rp_ds, pp_loc, N=N):
+def findNearestPoints(rp_ds, pp_loc, N=N, variableType="uas"):
     # given a rp map at one time step, and a exact location to predict, reuturn an array concluds 4 nearest Points
-    # pp_loc is also a one-dimensional array and has two numbers (lat, lon)
+    # pp_loc is also a one-dim
+    # means the value of each pp would be determined by 4 nearest ensional array and has two numbers (lat, lon)
     points, res = [], []
     lat, lon = pp_loc[0], pp_loc[1]
     # print(pp_loc)
@@ -115,7 +117,7 @@ def findNearestPoints(rp_ds, pp_loc, N=N):
 
     for lat in rp_ds.lat:
         for lon in rp_ds.lon:
-            point = Point(lat, lon, source=rp_ds)
+            point = Point(lat, lon, source=rp_ds, variableType=variableType)
 
     # for i in lat_idxs:
     #     for j in lon_idxs:
@@ -145,11 +147,14 @@ def findNearestPoints(rp_ds, pp_loc, N=N):
 
 
 # @ measureRunTime
-def interpolatedMap(grid_ds, rp_ds, time, bnd: list = bnd, exponent=EXPONENT, modelType=None):
+def interpolatedMap(grid_ds, rp_ds, time, bnd: list = bnd, exponent=EXPONENT, modelType=None, variableType="uas"):
     # given (a grid map at one time step) and (a rp map at one time step), pridict the value of each point on the grid
 
     # grid_ds = grid_ds.isel(time=0)
     xbnd, ybnd = bnd[0], bnd[1]
+    # pool = Pool()
+    # pool.map(main, arg_list)
+    # t2 = tim
 
     data = np.zeros((len(grid_ds.lat), len(grid_ds.lon)))
 
@@ -159,7 +164,8 @@ def interpolatedMap(grid_ds, rp_ds, time, bnd: list = bnd, exponent=EXPONENT, mo
 
             pp_loc = np.array((float(lat), float(lon)))
 
-            nearestNPoints = findNearestPoints(rp_ds, pp_loc)
+            nearestNPoints = findNearestPoints(
+                rp_ds, pp_loc, variableType=variableType)
 
             if nearestNPoints[0].dist == 0.0:
                 # to avoid dividing by zero
@@ -181,7 +187,7 @@ def interpolatedMap(grid_ds, rp_ds, time, bnd: list = bnd, exponent=EXPONENT, mo
 
         if xbnd and i >= xbnd:
             break
-        if i % 10 == 0:
+        if i % 10 == 0 or i == 1:
             print(f"gcm {modelType} [{i} of {len(data)}] is over")
 
     data = data[:, :, np.newaxis]
@@ -192,7 +198,7 @@ def interpolatedMap(grid_ds, rp_ds, time, bnd: list = bnd, exponent=EXPONENT, mo
     elif outputDataType == 'dataset':
         new = xr.Dataset(
             {
-                "uas": (["lat", "lon", "time"], data),
+                variableType: (["lat", "lon", "time"], data),
             },
             coords={
                 "lat": (["lat"], grid_ds.lat.to_index()),
@@ -210,20 +216,20 @@ def interpolatedMap(grid_ds, rp_ds, time, bnd: list = bnd, exponent=EXPONENT, mo
 
 
 @ measureRunTime
-def interpolatedDataset(grid_ds, rp_ds, startTime=STARTDATE, endTime=ENDDATE, modelType=None):
+def interpolatedDataset(grid_ds, rp_ds, startTime=STARTDATE, endTime=ENDDATE, modelType=None, variableType="uas"):
 
     timeIdx = 0
     rp_ds = rp_ds.sel(time=slice(startTime, endTime))
 
     # print(rp_ds)
     times = rp_ds['time'].to_index()
-    # print(times)
+
     concacted = interpolatedMap(grid_ds, rp_ds.sel(
-        time=times[0]), times[:1], modelType=modelType)
+        time=times[0]), times[:1], modelType=modelType, variableType=variableType)
     for timeIdx in range(1, len(times)):
 
         new = interpolatedMap(grid_ds, rp_ds.sel(
-            time=times[timeIdx]), times[timeIdx:timeIdx+1], modelType=modelType)
+            time=times[timeIdx]), times[timeIdx:timeIdx+1], modelType=modelType, variableType=variableType)
         concacted = xr.concat([concacted, new], dim='time')
         print(
             f"interpolation and concaction for {startTime} to {endTime} is over")
@@ -254,7 +260,7 @@ def preprocessed(ds, modelType='', startdate=None, enddate=None):
         return MRI_preprocess(ds)
 
     def CNRM_ESM_preprocess(ds):
-        ds = ds.drop_vars(['time_bounds'])
+        ds = ds.drop_vars(['time_bou8nds'])
 
         ds = ds.transpose('lat', 'lon', 'time')
         return ds
@@ -285,7 +291,7 @@ def preprocessed(ds, modelType='', startdate=None, enddate=None):
 
 def main(args):
     # interpolate one month of data
-    grid_ds, file, modelType, startdate, enddate, valueType = args[
+    grid_ds, file, modelType, startdate, enddate, variableType = args[
         0], args[1], args[2], args[3], args[4], args[5]
 
     rp_ds = xr.open_dataset(file, engine='h5netcdf')
@@ -294,14 +300,14 @@ def main(args):
                          startdate=startdate, enddate=enddate)
 
     out = interpolatedDataset(
-        grid_ds, rp_ds, modelType=modelType, startTime=startdate, endTime=enddate)
+        grid_ds, rp_ds, modelType=modelType, startTime=startdate, endTime=enddate, variableType=variableType)
 
-    write_dir = write_dir_base + f"/{modelType}/{valueType}"
+    write_dir = write_dir_base + f"/{modelType}/{variableType}"
     if not os.path.exists(write_dir):
         os.makedirs(write_dir)
 
     out.to_netcdf(
-        write_dir + f"/{modelType}_{startdate}_{valueType}.nc", engine="h5netcdf")
+        write_dir + f"/{modelType}_{startdate.year}-{startdate.month}_{variableType}.nc", engine="h5netcdf")
     # return 0
 
     # print(comparision(grid_ds, [out, out]))
@@ -314,29 +320,33 @@ if __name__ == '__main__':
     grid_ds = xr.open_dataset(grid_dir, engine='cfgrib')
     grid_ds = preprocessed(grid_ds, modelType='JRA')
     grid_ds = grid_ds.isel(time=0)
-
-    startdate_list = pd.date_range(STARTDATE, ENDDATE, freq="MS")
-    # enddate_list = startdate_list+datetime.timedelta(days=1)
-    enddate_list = pd.date_range(STARTDATE, ENDDATE, freq="M")
     # a list of month start date
 
     arg_list = []
 
     for filepath in glob(rp_dir, recursive=True):
+        ds = xr.open_dataset(filepath, engine="h5netcdf")
+        ds = ds.sel(time=slice(STARTDATE, ENDDATE))
+        if len(ds.time) == 0:
+            continue
+        timeIdx = ds.time.to_index()
+        startdate_list = pd.date_range(timeIdx[0], timeIdx[-1], freq="MS")
+        enddate_list = pd.date_range(timeIdx[0], timeIdx[-1], freq="M")
         for startdate, enddate in zip(startdate_list, enddate_list):
-            valueType = os.path.basename(os.path.dirname(filepath))
+            variableType = os.path.basename(os.path.dirname(filepath))
             modelType = os.path.basename(
                 os.path.dirname(os.path.dirname(filepath)))
 
             args = (grid_ds, filepath, modelType,
-                    startdate, enddate, valueType)
+                    startdate, enddate, variableType)
             arg_list.append(args)
 
     # for args in arg_list:
-    #     print(args[1:])
+    #     print(args[3:5])
+    # print(len(arg_list))
     t1 = time()
     pool = Pool()
     pool.map(main, arg_list)
     t2 = time()
 
-    print(f'run time is {t2-t1:.04f} sec')
+    print(f'run time is {t2-t1:.04f} sec, for {len(arg_list)} loops')
