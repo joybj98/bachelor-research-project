@@ -311,59 +311,104 @@ class ReferData():
 
 class REAWeighting():
 
-    def __init__(self, referData, modelData_list):
-        self.refer = ReferData(referData)
-        self.models = modelData_list
+    def __init__(self, referData, modelData):
 
-    def B_T(self):
+        self.refer = referData
+        self.models = modelData
+        self.data = np.array([model.data for model in self.models])
+        self.weights = None
+        self.res = np.array([None])
 
-        B_T = [(model-self.refer).rolling(time=12*20).mean()
-               for model in self.models]
+    def getWeights(self):
 
-        self.B_T = B_T
-        return self.B_T
+        def B(self):
 
-    def D_T(self):
-        model_mean = self.models.mean(axis=0)
+            B = [(model-self.refer).rolling(time=12*20).mean()
+                 for model in self.models]
 
-        D_T = [(model-model_mean).rolling(time=12*20).mean()
-               for model in self.models]
-        self.D_T = D_T
+            return B
 
-        return self.D_T
+        def D(self):
 
-    def REA(self):
+            model_mean = self.res if self.res.any() else sum(
+                self.models)/len(self.models)
+            # print(model_mean, '\n\n\n\n')
 
-        epsilon = self.refer.epsilon()
+            D = [(model-model_mean).rolling(time=12*20).mean()
+                 for model in self.models]
+
+            return D
+
+        def getEpsilon(self):
+            r = self.refer.rolling(time=12*20)
+            return r.max()-r.min()
+
+        epsilon = getEpsilon(self)
 
         def RB(self):
-            return epsilon/abs(self.B_T)
+            def getRB_i(B):
+                RB_i = (epsilon/abs(B)).mean()
+
+                return RB_i if RB_i < 1 else 1
+
+            return list(map(getRB_i, B(self)))
 
         def RD(self):
-            return epsilon/abs(self.D_T)
+            def getRD_i(D):
+                RD_i = (epsilon/abs(D)).mean()
+                return RD_i if RD_i < 1 else 1
+
+            return list(map(getRD_i, D(self)))
 
         def R(self):
-            return RB*RD
+            # print(RB(self), '\n\n\n', RD(self), '\n')
+            return [RB_i * RD_i for RB_i, RD_i in zip(RB(self), RD(self))]
 
-        return 0
+        self.weights = np.array(R(self))
+
+    def getWeightedMean(self):
+        self.getWeights()
+        # print(self.weights.shape, self.data.shape)
+        weighted = 0
+        for w, model in zip(self.weights, self.models):
+            weighted += w*model
+        self.res = weighted/sum(self.weights)
+
+    def getRes(self):
+        for i in range(8):
+            self.getWeightedMean()
+
+            print(ModelPair(self.refer.data.ravel(), self.res.data.ravel()).MSE())
+
+        return self.res
+
+
+'''
+
+修改一下ModelPair 让他在里面用ravel（）
+修改一下REA的循环次数， 让MSE变小之后就停止循环
+
+'''
 
 
 def test():
     y = xr.Dataset(
         {
-            "x": (["lat", "lon", "time"], np.array(range(12*2*10*10)).reshape(10, 10, -1))
+            "x": (["lat", "lon", "time"], np.array(range(12*45*100*150)).reshape(100, 150, -1))
         },
         coords={
-            "lat": (["lat"], np.array(range(10))),
-            "lon": (["lon"], np.array(range(10))),
-            'time': (['time'], np.array(range(24)))
+            "lat": (["lat"], np.array(range(100))),
+            "lon": (["lon"], np.array(range(150))),
+            'time': (['time'], np.array(range(12*45)))
         })
-    a = (y*1.01).rename({"x": "a"})
-    b = (a + 1).rename({"a": "b"})
-    c = (a - 1).rename({"a": "c"})
-    lst = xr.merge([a, b, c])
-    z = REAWeighting(y, lst)
-    print(z.D_T())
+    a = y*1.1
+    b = a*0.9 + 50
+    c = a - 100
+    # lst = xr.concat([a, b, c], pd.Index(list('abc'), name='models'))\
+    lst = [a.x, b.x, c.x]
+    # print(lst)
+    z = REAWeighting(y.x, lst)
+    print(z.getRes())
     # a = a.x[0, 0, :]
 
 
@@ -424,4 +469,5 @@ if __name__ == "__main__":
     # print(comparision(JRA, data_list))
 
     # print(comparision(JRA, data_list))
+    print(f"over. time is {time()-t:.2f}")
     print(f"over. time is {time()-t:.2f}")
