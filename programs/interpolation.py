@@ -31,7 +31,7 @@ ENDDATE = '2015-12-31'
 
 grid_dir = '/home/waterlab/Wang/bachelor_thesis/downloads/JRA/rawdownloads/uas/anl_mdl.033_ugrd.reg_tl319.196101_196112.wang528867'
 
-rp_dir = '../downloads/GCMs/*/*.nc'
+rp_dir = '../downloads/GCMs/MRI/*.nc'
 
 write_dir_base = '../interpolated_gcms_mon'
 
@@ -49,7 +49,7 @@ bnd = [None, None]
 # the default setting shoud be theirselves.
 # the default should be like: STARTDATE = STARTDATE
 STARTDATE = '1960-01-01'
-ENDDATE = '2010-01-01'
+ENDDATE = '2018-01-01'
 
 '''-----2-----'''
 timeMeasurement = True
@@ -112,6 +112,7 @@ def findNearestPoints(rp_ds, pp_loc, N=N, variableType="uas"):
     points, res = [], []
     lat, lon = pp_loc[0], pp_loc[1]
     # print(pp_loc)
+
     rp_ds = rp_ds.sel(lat=slice(lat-2, lat+2), lon=slice(lon-2, lon+2))
 
     # this is because we don't neet to check evey point in the grid to find 4 nearest points
@@ -309,8 +310,8 @@ def main(args):
 
     rp_ds = preprocessed(rp_ds, modelType=modelType,
                          startdate=startdate, enddate=enddate, variableType=variableType)
-    print(rp_ds)
-
+    # print(rp_ds)
+    print(args[2:])
     out = interpolatedDataset(
         grid_ds, rp_ds, modelType=modelType, startTime=startdate, endTime=enddate, variableType=variableType)
 
@@ -350,24 +351,27 @@ if __name__ == '__main__':
 
                 args = (grid_ds, filepath, modelType,
                         startdate, enddate, variableType)
-                arg_list.append(args)
-                break
-            break
+                if not os.path.exists(write_dir_base + f"/{modelType}/{variableType}/{modelType}_{startdate.year}_{variableType}.nc"):
+
+                    arg_list.append(args)
+
     # print(grid_ds)
     # for args in arg_list:
-        # print(args[1:], "\n\n")
-        # print(args[3:5])
-    # print(len(arg_list))
-    main(arg_list[0])
+    #     print(args[2:], "\n\n")
+    #     # print(args[3:5])
+    print(len(arg_list))
+    # print(f"the time would be about {len(arg_list)*35/40/60 :.2f} hours")
 
-    # # print(f"the time would be about {len(arg_list)*30/7/60 :.2f} hours")
-    # t1 = time()
-    # pool = Pool()
-    # pool.map(main, arg_list)
-    # t2 = time()
+    t1 = time()
 
-    # print(
-    #     f'run time is {t2-t1:.04f} sec, {(t2-t1)/60/60:.2f} hours, for {len(arg_list)} loops')
-    # for file in glob(write_dir_base+"/**/*.nc", recursive=True):
-    #     ds = xr.open_dataset(file, engine="h5netcdf")
-    #     print(ds, "\n\n\n\n")
+    for args in arg_list:
+        main(args)
+
+        if (time() - t1) > 12*60*60:
+            break
+
+    # Pool().map(main, arg_list)
+    t2 = time()
+
+    print(
+        f'run time is {t2-t1:.04f} sec, {(t2-t1)/60/60:.2f} hours, for {len(arg_list)} loops. while the predicted time is {len(arg_list)*35/40/60 :.2f} hours')
