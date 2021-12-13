@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -17,6 +16,12 @@ from scipy import linalg
 from scipy.stats import entropy
 import matplotlib.pyplot as plt
 
+'''
+put B() epsilon() etc.... in REAweighting outside of iterations.
+
+修改一下ModelPair 让他在里面用ravel（）
+
+'''
 
 LATBOUND = [-10, 60]
 LONBOUND = [95, 180]
@@ -32,9 +37,10 @@ CNRM_dir = "../interpolated_gcms_mon/CNRM-ESM2-1/"
 
 
 class ModelPair():
-    def __init__(self, referModelData_1dim, selfModelData_1dim):
-        self.refer = referModelData_1dim
-        self.model = selfModelData_1dim
+    def __init__(self, referModel, selfModel):
+
+        self.refer = referModel
+        self.model = selfModel
 
     def error(self):
         return np.array(self.model - self.refer)
@@ -70,16 +76,8 @@ class ModelPair():
         return dictionary
 
 
-# class ModelPair(referData, modelData):
-#     def
-
 def droppingVariablesOfds(ds, distToBound=0):
-    # lat_idxs = [i for i in range(len(ds.lat)) if LATBOUND[0]-distToBound <= float(
-    #     ds.lat[i]) <= LATBOUND[1]+distToBound]
-    # lon_idxs = [i for i in range(len(ds.lon)) if LONBOUND[0]-distToBound <= float(
-    #     ds.lon[i]) <= LONBOUND[1]+distToBound]
-
-    return ds.sel(lat=slice(LATBOUND[0], LATBOUND[1]), lon=slice(LONBOUND[0], LONBOUND[1]))
+    return ds.sel(lat=slice(LATBOUND[0]-distToBound, LATBOUND[1]+distToBound), lon=slice(LONBOUND[0]-distToBound, LONBOUND[1]+distToBound))
 
 
 def preprocessed(ds, modelType='', startdate=None, enddate=None):
@@ -133,6 +131,30 @@ def preprocessed(ds, modelType='', startdate=None, enddate=None):
     return main_preprocess(ds)
 
 
+def getVarToDim(ds):
+    '''
+
+
+    Parameters
+    ----------
+    ds : xarray.Dataset which have multiple variables
+
+    Returns
+    -------
+    res : xarray.DataArray
+          only as one variable named 'variables'.
+
+          Increased a dimension. different coordinate in the new dimension shows different variables in the old dataset.
+
+    '''
+
+    newdim = pd.Index([str(variable) for variable in ds], name='var')
+
+    res = xr.concat([ds[variable] for variable in ds], newdim)
+    res = res.rename('variables')
+    return res
+
+
 def comparision(referData, modelData_list: list):
 
     # the modelData_list includes lists of data of different models
@@ -160,47 +182,6 @@ def comparision(referData, modelData_list: list):
 
 def normalized(data):
     return (data-data.min())/(data.max() - data.min())
-
-
-def NewbatchGradientDesent(X, Y, weights, alpha, iters):
-
-    def feasibleSpace(dim):
-        I = np.identity(dim-1, dtype="int")
-        ones = np.ones(dim-1).reshape(1, dim-1)
-
-        return np.append(-I, ones, axis=0)
-
-    def projectionMatrix(A):
-        return A @ linalg.inv(A.T @ A) @ A.T
-
-    dim = len(weights)
-    weights[-1] = 1-sum(weights[:-1])
-    costHistory = [0]*iters
-    prediction = weights @ X
-    P = projectionMatrix(feasibleSpace(dim))
-    for i in range(iters):
-
-        decent = (alpha/len(Y)) * (X@(prediction-Y))
-        P = projectionMatrix()
-        projectedDecent = P@decent
-
-        weights = weights-projectedDecent
-        if weights.min() > 0:
-            reached_bound = 0
-        else:
-            if reached_bound >= 3:
-                break
-            else:
-                weights = np.array(weights) + projectedDecent * \
-                    (weights.min()/projectedDecent[np.argmin(weights)])
-                reached_bound += 1
-
-        prediction = weights @ X
-        costHistory[i] = ModelPair(Y, weights@X).MSE()
-
-    # print(costHistory)
-    # print(weights)
-    return prediction, weights, costHistory
 
 
 def newMiniBatchGradientDecent(X, Y, weights, iters=50, batchSize=1000):
@@ -274,50 +255,83 @@ def batchGradientDesent(X, Y, weights, alpha, iters):
     return prediction, weights, costHistory
 
 
-def optimized_weighting(startdate, enddate):
+class optimizedWeighting():
+    def __init__(self, referData, modelData):
+        self.refer = referData
+        self.models = modelData
+        self.weights = None
 
-    JRA = xr.open_dataset(JRA_dir, engine="cfgrib")
-    JRA = preprocessed(JRA, "JRA").uas.values.ravel()
+    def NewbatchGradientDesent(self, weights, alpha, iters):
 
-    MRI = xr.open_dataset(MRI_dir, engine="h5netcdf").uas.sel(
-        time=slice(startdate, enddate)).values.ravel()
-    MIROC6 = xr.open_dataset(MIROC6_dir, engine="h5netcdf").uas.sel(
-        time=slice(startdate, enddate)).values.ravel()
+        X = self.models
+        Y = self.refer
 
-    # print(JRA.size, MRI.size, MIROC6.size)
-    fake = MRI * 1.01-np.cos(MRI)
-    weights = np.array([10, 10, 10])
+        def feasibleSpace(dim):
+            I = np.identity(dim-1, dtype="int")
+            ones = np.ones(dim-1).reshape(1, dim-1)
 
-    res, weights, _ = batchGradientDesent(
-        np.array([MRI, MIROC6, fake]), JRA, weights, 0.005, 100)
+            return np.append(-I, ones, axis=0)
 
-    return res, weights
+        def projectionMatrix(A):
+            return A @ linalg.inv(A.T @ A) @ A.T
 
+        dim = len(X)
+        weights[-1] = 1-sum(weights[:-1])
+        costHistory = [0]*iters
+        prediction = weights @ X
+        P = projectionMatrix(feasibleSpace(dim))
+        for i in range(iters):
 
-class ReferData():
-    def __init__(self, referData):
-        self.data = referData
-        self.roll = self.data.rolling(time=20*12)
+            decent = (alpha/len(Y)) * (X@(prediction-Y))
+            P = projectionMatrix()
+            projectedDecent = P@decent
 
-    def rollingMax(self):
-        return self.roll.max()
+            weights = weights-projectedDecent
+            if weights.min() > 0:
+                reached_bound = 0
+            else:
+                if reached_bound >= 3:
+                    break
+                else:
+                    weights = np.array(weights) + projectedDecent * \
+                        (weights.min()/projectedDecent[np.argmin(weights)])
+                    reached_bound += 1
 
-    def rollingMin(self):
-        return self.roll.min()
+            prediction = weights @ X
+            costHistory[i] = ModelPair(Y, weights@X).MSE()
 
-    def epsilon(self):
-        return self.roll.max()-self.roll.min()
+        # print(costHistory)
+        # print(weights)
+        return prediction, weights, costHistory
 
 
 class REAWeighting():
 
-    def __init__(self, referData, modelData):
+    '''
+    REFERS TO:
 
+    Giorgi, F., & Mearns, L. O. (2002). Calculation of Average, Uncertainty Range, and Reliability of Regional Climate Changes from AOGCM Simulations via the “Reliability Ensemble Averaging” (REA) Method, Journal of Climate, 15(10), 1141-1158. Retrieved Dec 13, 2021, from https://journals.ametsoc.org/view/journals/clim/15/10/1520-0442_2002_015_1141_coaura_2.0.co_2.xml
+
+
+    '''
+
+    def __init__(self, referData, modelData):
+        '''
+
+
+        Parameters
+        ----------
+        referData : xarray.DataArray
+
+        modelData : list whose units are xarray.DataArray
+
+        Because we are using DataArray.rolling method, we use DataArray instead of np.ndarray initially.
+
+        '''
         self.refer = referData
         self.models = modelData
-        self.data = np.array([model.data for model in self.models])
         self.weights = None
-        self.res = np.array([None])
+        self.res = np.array(None)
 
     def getWeights(self):
 
@@ -364,51 +378,67 @@ class REAWeighting():
             # print(RB(self), '\n\n\n', RD(self), '\n')
             return [RB_i * RD_i for RB_i, RD_i in zip(RB(self), RD(self))]
 
-        self.weights = np.array(R(self))
+        R = np.array(R(self))
+        self.weights = R/sum(R)
+        return self.weights
 
     def getWeightedMean(self):
-        self.getWeights()
+        weights = self.getWeights()
+
         # print(self.weights.shape, self.data.shape)
         weighted = 0
-        for w, model in zip(self.weights, self.models):
+        for w, model in zip(weights, self.models):
             weighted += w*model
-        self.res = weighted/sum(self.weights)
 
-    def getRes(self):
-        for i in range(8):
-            self.getWeightedMean()
+        return weighted
 
-            print(ModelPair(self.refer.data.ravel(), self.res.data.ravel()).MSE())
+    def getRes(self, iters=100, breakBound=1/50000):
+        MSE = float('inf')
 
+        for _ in range(iters):
+
+            res = self.getWeightedMean()
+            # print(res, '\n\n\n\n')
+            temp = ModelPair(self.refer.data.ravel(),
+                             res.data.ravel()).MSE()
+            if abs(MSE-temp) >= breakBound:
+                print(MSE-temp)
+                MSE = temp
+                self.res = res
+            else:
+                break
+            print(f'iters are {_}')
         return self.res
-
-
-'''
-
-修改一下ModelPair 让他在里面用ravel（）
-修改一下REA的循环次数， 让MSE变小之后就停止循环
-
-'''
 
 
 def test():
     y = xr.Dataset(
         {
-            "x": (["lat", "lon", "time"], np.array(range(12*45*100*150)).reshape(100, 150, -1))
+            "x": (["lat", "lon", "time"], np.array(range(12*45*100*150)).reshape(100, 150, -1)),
+            'y': (["lat", "lon", "time"], np.array(range(-100, 12*45*100*150-100)).reshape(100, 150, -1)),
         },
         coords={
             "lat": (["lat"], np.array(range(100))),
             "lon": (["lon"], np.array(range(150))),
             'time': (['time'], np.array(range(12*45)))
         })
+
+    y = getVarToDim(y)
+
     a = y*1.1
-    b = a*0.9 + 50
-    c = a - 100
-    # lst = xr.concat([a, b, c], pd.Index(list('abc'), name='models'))\
-    lst = [a.x, b.x, c.x]
-    # print(lst)
-    z = REAWeighting(y.x, lst)
-    print(z.getRes())
+    b = a*0.9 + 500
+    c = a - 10000
+
+    lst = [a, b, c]
+
+    z = REAWeighting(y, lst)
+    weighted = z.getRes()
+
+    p = ModelPair(y.data.ravel(), weighted.data.ravel())
+
+    print(p.error(), p.RMSE(), p.R(), p.bias())
+
+    # print(y.x)
     # a = a.x[0, 0, :]
 
 
@@ -469,5 +499,4 @@ if __name__ == "__main__":
     # print(comparision(JRA, data_list))
 
     # print(comparision(JRA, data_list))
-    print(f"over. time is {time()-t:.2f}")
     print(f"over. time is {time()-t:.2f}")

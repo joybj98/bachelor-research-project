@@ -96,13 +96,17 @@ def newVal(weights, values):
     return (weights @ values)/sum(weights)
 
 
-def droppingVariablesOfds(ds, distToBound=0):
-    lat_idxs = [i for i in range(len(ds.lat)) if LATBOUND[0]-distToBound <= float(
-        ds.lat[i]) <= LATBOUND[1]+distToBound]
-    lon_idxs = [i for i in range(len(ds.lon)) if LONBOUND[0]-distToBound <= float(
-        ds.lon[i]) <= LONBOUND[1]+distToBound]
+# def droppingVariablesOfds(ds, distToBound=0):
+#     lat_idxs = [i for i in range(len(ds.lat)) if LATBOUND[0]-distToBound <= float(
+#         ds.lat[i]) <= LATBOUND[1]+distToBound]
+#     lon_idxs = [i for i in range(len(ds.lon)) if LONBOUND[0]-distToBound <= float(
+#         ds.lon[i]) <= LONBOUND[1]+distToBound]
 
-    return ds.isel(lat=lat_idxs, lon=lon_idxs)
+#     return ds.isel(lat=lat_idxs, lon=lon_idxs)
+
+
+def droppingVariablesOfds(ds, distToBound=0):
+    return ds.sel(lat=slice(LATBOUND[0]-distToBound, LATBOUND[1]+distToBound), lon=slice(LONBOUND[0]-distToBound, LONBOUND[1]+distToBound))
 
 
 def findNearestPoints(rp_ds, pp_loc, N=N, variableType="uas"):
