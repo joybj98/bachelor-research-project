@@ -38,10 +38,10 @@ class ModelPair():
 
         Parameters
         ----------
-        referModel : np.ndarray or xr.DataArray
-                    If using xr.DataArray, make sure the order of axises is the same.
+        referModel : xr.DataArray
+                    make sure the order of axises is the same.
 
-        Model : np.ndarray or xr.DataArray
+        Model : xr.DataArray
 
 
 
@@ -65,7 +65,7 @@ class ModelPair():
     # using R[0][1] is because R is a 2 by 2 matrix. which includes Rxx,Rxy,Ryx,Ryy. And we only use Rxy (equals to Ryx)
 
     def MSE(self):
-        return np.square(self.error()).sum()/len(self.refer)
+        return np.square(self.error()).mean()
 
     def RMSE(self):
         return sqrt(self.MSE())
@@ -182,7 +182,23 @@ def newMiniBatchGradientDecent(X, Y, weights, iters=50, batchSize=1000):
 
 
 class OptimizedWeighting():
-    def __init__(self, referData, modelData, alpha=0.05, iters=30):
+    def __init__(self, referData, modelData: list, alpha=0.1, iters=30):
+        '''
+
+
+        Parameters
+        ----------
+        referData : xr.dataArray
+            make it to an 1-dimensional np.ndarray
+        modelData : list
+            a list of xr.dataArray
+        alpha : TYPE, optional
+            learning rate The default is 0.05.
+        iters : TYPE, optional
+            times of decenting from a set of initial weights. The default is 30.
+
+        '''
+
         self.refer = referData.data.ravel()
         self.models = np.array([model.data.ravel() for model in modelData])
         self.weights = np.array([1/len(modelData)]*len(modelData))
@@ -190,13 +206,13 @@ class OptimizedWeighting():
 
         self.iters = iters
 
-    def _NewbatchGradientDesent(self):
+    def _NewbatchGradientDesent(self, initial_weights):
 
         X = self.models
         Y = self.refer
         alpha = self.alpha
         iters = self.iters
-        weights = np.array(self.weights)
+        weights = np.array(initial_weights)
 
         def feasibleSpace(dim):
             I = np.identity(dim-1, dtype="int")
@@ -206,6 +222,9 @@ class OptimizedWeighting():
 
         def projectionMatrix(A):
             return A @ linalg.inv(A.T @ A) @ A.T
+
+        def MSE(refer, model):
+            return np.square(model-refer).mean()
 
         dim = len(X)
         # print(dim)
@@ -225,7 +244,7 @@ class OptimizedWeighting():
             if weights.min() > 0:
                 reached_bound = 0
             else:
-                if reached_bound >= 3:
+                if reached_bound >= 4:
                     break
                 else:
                     weights = np.array(weights) + projectedDecent * \
@@ -233,28 +252,35 @@ class OptimizedWeighting():
                     reached_bound += 1
 
             prediction = weights @ X
-            costHistory[i] = ModelPair(Y, weights@X).MSE()
-            print(weights)
+            costHistory[i] = MSE(Y, weights@X)
+            print(i, weights)
 
             print(costHistory[i])
 
         # print(weights)
-        return prediction, weights, costHistory[-1]
+
+        return prediction, weights, [c for c in costHistory[::-1] if c != 0][0]
 
     def getWeights(self, iters=20):
         minMSE = float('inf')
         for i in range(iters):
 
-            weights = self.weights[:-1]+np.random.uniform(-1, 1, size=2)*0.001
-            weights = np.append(weights, 1-sum(weights))
-            print(self.weights)
+            # weights = np.array([1/len(self.models)]*(len(self.models)-1)) + \
+            #     np.random.uniform(-1, 1, size=2)*0.1
+            weights = np.random.rand(3)
+            weights = weights/sum(weights)
+            print(f'for {i} w is')
+            print(weights)
 
-            res, weights, MSE = self._NewbatchGradientDesent()
+            res, weights, MSE = self._NewbatchGradientDesent(weights)
             if MSE < minMSE:
-                print(MSE)
-                self.weights = weights
+                print(f'update! from {minMSE} to {MSE}')
 
-        return self.weights
+                minMSE = MSE
+                print(MSE)
+                bestWeights = weights
+
+        return bestWeights
 
 
 class REAWeighting():
@@ -267,22 +293,30 @@ class REAWeighting():
 
     '''
 
-    def __init__(self, referData, modelData):
+    def __init__(self, referData_weighting, modelData_weighitng, modelData_testing):
         '''
 
 
         Parameters
         ----------
-        referData : xarray.DataArray
+        referData_weighting : xr.DataArray
 
-        modelData : list whose units are xarray.DataArray
+        modelData_weighitng : xr.DataArray
+            data for weighting periods (historical results)
+        modelData_testing : xr.DatAarray
+            model data for test periods (future projection) 
 
-        Because we are using DataArray.rolling method, we use DataArray instead of np.ndarray initially.
+        Returns
+        -------
+        None.
 
         '''
-        self.refer = referData
-        self.models = modelData
-        self.weights = None
+
+        self.refer = referData_weighting
+        self.models = modelData_weighitng
+        self.prediction = modelData_testing
+
+        self.weights = [1/len(self.models)]*len(self.models)
         self.res = np.array(None)
         self.computed = False
 
@@ -299,19 +333,24 @@ class REAWeighting():
 
         B = getB(self)
         self.epsilon = getEpsilon(self)
+        # print(B)
         # print(self.epsilon)
 
         def getRB(self):
             def getRB_i(B_i):
-                RB_i = (self.epsilon/abs(B_i)).mean()
+                RB_i_z = (self.epsilon/abs(B_i)).mean(dim=('lat', 'lon'))
+                RB_i_z = xr.where(RB_i_z < 1, RB_i_z, 1)
+                RB_i = np.prod(RB_i_z.data)
+
+                # print('\n\n\n\n', RB_i)
                 # print(RB_i)
 
-                return RB_i if RB_i < 1 else 1
+                return RB_i
 
             return list(map(getRB_i, B))
 
         self.RB = getRB(self)
-        # print(self.RB)
+        print(self.RB)
 
     def _getWeights(self):
 
@@ -320,19 +359,21 @@ class REAWeighting():
 
         def D(self):
 
-            model_mean = self.res if self.res.any() else sum(
-                self.models)/len(self.models)
+            model_mean = sum(
+                [w*model for w, model in zip(self.weights, self.prediction)])
 
             D = [abs(model-model_mean).mean(dim=('time', 'lat', 'lon'))
-                 for model in self.models]
+                 for model in self.prediction]
 
             return D
 
         def RD(self):
             def getRD_i(D_i):
-                RD_i = (epsilon/abs(D_i)).mean()
+                RD_i_z = (epsilon/abs(D_i)).mean(dim=('lat', 'lon'))
+                RD_i_z = xr.where(RD_i_z < 1, RD_i_z, 1)
+                RD_i = np.prod(RD_i_z.data)
 
-                return RD_i if RD_i < 1 else 1
+                return RD_i
 
             return list(map(getRD_i, D(self)))
 
@@ -420,10 +461,7 @@ def comparision(referData, modelData):
     return output
 
 
-def evaluate(referData, modelData, method):
-
-    methodList = {'REA': REAWeighting,
-                  'opt': OptimizedWeighting}
+def evaluate(referData, modelData):
 
     def split(a, n):
         '''
@@ -451,19 +489,19 @@ def evaluate(referData, modelData, method):
         y_weight = referData.sel(time=rest)
         x_weight = [model.sel(time=rest) for model in modelData]
 
-        weighting = methodList.get(method)(y_weight, x_weight)
-        weights = weighting.getWeights()
-        x_weighted = sum([w*x for w, x in zip(weights, x_test)])
-        x_weighted.name = 'weighted'
-        x_mean = sum(x_test)/len(x_test)
-        x_mean.name = 'mean'
+        # weights_rea = REAWeighting(y_weight, x_weight, x_test).getWeights()
+        weights_opt = OptimizedWeighting(y_weight, x_weight).getWeights()
 
-        res = np.append(res, comparision(
-            y_test, [x_weighted, x_mean]+x_test), axis=1) if res.size > 0 else comparision(y_test, [x_weighted, x_mean]+x_test)
-        print(res.shape)
+        # x_weighted = sum([w*x for w, x in zip(weights, x_test)])
+        # x_weighted.name = 'weighted'
+        # x_mean = sum(x_test)/len(x_test)
+        # x_mean.name = 'mean'
+
+        # res = np.append(res, comparision(
+        #     y_test, [x_weighted, x_mean]+x_test), axis=1) if res.size > 0 else comparision(y_test, [x_weighted, x_mean]+x_test)
+        break
 
     df = pd.DataFrame(res, Evaluating_indices)
-    print(df)
     return df
 
 
@@ -505,28 +543,41 @@ def main():
                              engine="h5netcdf")[['uas', 'vas']]
     CNRM = xr.open_dataset(CNRM_dir + "/CNRM-ESM2-1.nc",
                            engine="h5netcdf")[['uas', 'vas']]
-    MRI = xr.open_dataset(MRI_dir + '/MRI.nc',
-                          engine="h5netcdf")[['uas', 'vas']]
+    # MRI = xr.open_dataset(MRI_dir + '/MRI.nc',
+    # engine="h5netcdf")[['uas', 'vas']]
 
+    Fake = MIROC6 + 5*np.sin(CNRM)
+    MRI = Fake
     # print(JRA, MIROC6, CNRM, MRI)
 
     # print(JRA)
+
+    JRA = 0*MIROC6 + JRA
 
     JRA, MIROC6, CNRM, MRI = [getVarToDim(
         ds) for ds in [JRA, MIROC6, CNRM, MRI]][:]
     JRA, MIROC6, CNRM, MRI = JRA.rename('JRA'), MIROC6.rename(
         'MIROC6'), CNRM.rename('CNRM'), MRI.rename('MRI')
 
-    print(JRA, MIROC6, CNRM, MRI)
+    # print(JRA, MIROC6, CNRM, Fake)
 
-    # modelData = [MIROC6, CNRM, MRI]
-    # output = evaluate(JRA, modelData, 'Opt')
-    # print(output)
+    modelData = [MIROC6, CNRM, MRI]
+
+    output = evaluate(JRA, modelData)
+    print(output)
     # output.to_excel('../output/evaluate_REA.xlsx')
+
 
     # print(Fake)
 if __name__ == "__main__":
     t = time()
     main()
 
+    print(f"over. time is {time()-t:.2f}")
+    print(f"over. time is {time()-t:.2f}")
+    print(f"over. time is {time()-t:.2f}")
+    print(f"over. time is {time()-t:.2f}")
+    print(f"over. time is {time()-t:.2f}")
+    print(f"over. time is {time()-t:.2f}")
+    print(f"over. time is {time()-t:.2f}")
     print(f"over. time is {time()-t:.2f}")
