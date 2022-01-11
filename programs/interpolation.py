@@ -9,7 +9,7 @@ import xarray as xr
 
 import pandas as pd
 import numpy as np
-import datetime as dt
+# import datetime as dt
 from time import time
 from glob import glob
 import os
@@ -25,9 +25,9 @@ EXPONENT = 2
 LATBOUND = [-10, 60]
 LONBOUND = [95, 180]
 
+STARTDATE = '1960-01-01'
+ENDDATE = '2018-01-01'
 
-STARTDATE = '1970-01-01'
-ENDDATE = '2015-12-31'
 
 grid_dir = '/home/waterlab/Wang/bachelor_thesis/downloads/JRA/rawdownloads/uas/anl_mdl.033_ugrd.reg_tl319.196101_196112.wang528867'
 
@@ -46,10 +46,10 @@ bnd = [None, None]
 # these limit the program only to predict few points for each time step
 
 '''-----1-----'''
-# the default setting shoud be theirselves.
-# the default should be like: STARTDATE = STARTDATE
 STARTDATE = '1960-01-01'
 ENDDATE = '2018-01-01'
+# the default setting shoud be theirselves.
+# the default should be like: STARTDATE = STARTDATE
 
 '''-----2-----'''
 timeMeasurement = True
@@ -58,6 +58,8 @@ timeMeasurement = True
 '''-----3-----'''
 outputDataType = 'dataset'
 # can only set as 'dataarray' or 'dataset'
+
+cnt = 0
 
 
 def measureRunTime(func):
@@ -83,30 +85,30 @@ class Point():
         self.type = variableType
 
     def getValue(self):
+        # print(self.source, self.lat, self.lon)
+
         if self.source and self.lat and self.lon and self.type:
+
             value = float(self.source.sel(
-                lat=self.lat, lon=self.lon, method='nearest', tolerance=0.01)[self.type])
+                lat=self.lat, lon=self.lon, method='nearest')[self.type])
         else:
             raise ValueError(
                 'need to know the lat, lon, source and variableType to get the value. Now the three are {bool(self.source)}, {bool(self.lat)}, {bool(self.lon)}, {bool(self.type)!')
-        return value
+        self.value = value
 
 
 def newVal(weights, values):
     return (weights @ values)/sum(weights)
 
 
-# def droppingVariablesOfds(ds, distToBound=0):
-#     lat_idxs = [i for i in range(len(ds.lat)) if LATBOUND[0]-distToBound <= float(
-#         ds.lat[i]) <= LATBOUND[1]+distToBound]
-#     lon_idxs = [i for i in range(len(ds.lon)) if LONBOUND[0]-distToBound <= float(
-#         ds.lon[i]) <= LONBOUND[1]+distToBound]
-
-#     return ds.isel(lat=lat_idxs, lon=lon_idxs)
-
-
 def droppingVariablesOfds(ds, distToBound=0):
+
     return ds.sel(lat=slice(LATBOUND[0]-distToBound, LATBOUND[1]+distToBound), lon=slice(LONBOUND[0]-distToBound, LONBOUND[1]+distToBound))
+
+
+def find4Nearest(rp_ds, pp_loc, variableType="uas"):
+
+    pass
 
 
 def findNearestPoints(rp_ds, pp_loc, N=N, variableType="uas"):
@@ -117,7 +119,15 @@ def findNearestPoints(rp_ds, pp_loc, N=N, variableType="uas"):
     lat, lon = pp_loc[0], pp_loc[1]
     # print(pp_loc)
 
-    rp_ds = rp_ds.sel(lat=slice(lat-2, lat+2), lon=slice(lon-2, lon+2))
+    try:
+        rp_ds = rp_ds.sel(lat=slice(lat-2, lat+2), lon=slice(lon-2, lon+2))
+    except:
+        with open(f'/home/waterlab/Wang/bachelor_thesis/interpolated_gcms_mon/MRI/{variableType}/error.txt', 'a') as f:
+            info = [rp_ds, rp_ds.lat, rp_ds.lon, lat, lon, variableType]
+            for s in info:
+                f.write(str(s)+'\n')
+
+        rp_ds = rp_ds
 
     # this is because we don't neet to check evey point in the grid to find 4 nearest points
 
@@ -137,35 +147,33 @@ def findNearestPoints(rp_ds, pp_loc, N=N, variableType="uas"):
 
     if len(points) == N:
         for point in points:
-            point.value = point.getValue()
+            point.getValue()
         res = points
     else:
 
-        points = sorted(points, key=lambda point: point.dist)
+        for point in sorted(points, key=lambda point: point.dist)[:N]:
+            point.getValue()
+            res.append(point)
 
-        for i in range(N):
-            # print(points[i].lat, points[i].lon, points[i].source)
-            points[i].value = points[i].getValue()
-            res.append(points[i])
+        # points = sorted(points, key=lambda point: point.dist)
+
+        # for i in range(N):
+        #     points[i].getValue()
+        #     res.append(points[i])
             # print(
             #     f'for pp at {pp_loc} found No.{i} nearest rp, at {res[i].loc} with distance {res[i].dist}')
     return res
 
 
-# @ measureRunTime
+@ measureRunTime
 def interpolatedMap(grid_ds, rp_ds, time, bnd: list = bnd, exponent=EXPONENT, modelType=None, variableType="uas"):
     # given (a grid map at one time step) and (a rp map at one time step), pridict the value of each point on the grid
 
     # grid_ds = grid_ds.isel(time=0)
     xbnd, ybnd = bnd[0], bnd[1]
-    # pool = Pool()
-    # pool.map(main, arg_list)
-    # t2 = tim
-
     data = np.zeros((len(grid_ds.lat), len(grid_ds.lon)))
-
+    # print(data.shape)
     for i, lat in enumerate(grid_ds.lat):
-
         for j, lon in enumerate(grid_ds.lon):
 
             pp_loc = np.array((float(lat), float(lon)))
@@ -195,6 +203,8 @@ def interpolatedMap(grid_ds, rp_ds, time, bnd: list = bnd, exponent=EXPONENT, mo
             break
         if i % 10 == 0 or i == 1:
             print(f"gcm {modelType} [{i} of {len(data)}] is over")
+    # print(data.shape)
+    assert data.size > 100, 'interpolate error'
 
     data = data[:, :, np.newaxis]
     if outputDataType == 'dataarray':
@@ -223,7 +233,7 @@ def interpolatedMap(grid_ds, rp_ds, time, bnd: list = bnd, exponent=EXPONENT, mo
 
 @ measureRunTime
 def interpolatedDataset(grid_ds, rp_ds, startTime=STARTDATE, endTime=ENDDATE, modelType=None, variableType="uas"):
-
+    assert len(rp_ds.lat) > 5, 'lat error'
     timeIdx = 0
     rp_ds = rp_ds.sel(time=slice(startTime, endTime))
 
@@ -232,6 +242,7 @@ def interpolatedDataset(grid_ds, rp_ds, startTime=STARTDATE, endTime=ENDDATE, mo
 
     concacted = interpolatedMap(grid_ds, rp_ds.sel(
         time=times[0]), times[:1], modelType=modelType, variableType=variableType)
+    assert concacted[variableType].data.size > 100, 'interpolatedMap error'
     for timeIdx in range(1, len(times)):
 
         new = interpolatedMap(grid_ds, rp_ds.sel(
@@ -250,18 +261,15 @@ def preprocessed(ds, modelType='', startdate=None, enddate=None, variableType=No
             ds = ds.rename({"v": "vas"})
         ds = ds.rename(
             {'latitude': 'lat', 'longitude': 'lon'})
+        ds = ds.sortby('lat')
         ds = droppingVariablesOfds(ds)
         ds = ds.transpose('lat', 'lon', 'time')
-        ds = ds.sortby('lat')
         return ds
 
     def MRI_preprocess(ds):
-
+        # print('here\n\n\n\n')
         # ds = ds.drop_vars(['time_bnds', 'lon_bnds', 'lat_bnds'])
         ds["time"] = ds.time.to_index().map(lambda t: t.replace(day=1, hour=0))
-
-        # ds = droppingVariablesOfds(ds,  mode='GCM')
-        # ds = droppingVariablesOfds(ds, 5)
 
         ds = ds.transpose('lat', 'lon', 'time')
 
@@ -292,9 +300,11 @@ def preprocessed(ds, modelType='', startdate=None, enddate=None, variableType=No
     def main_preprocess(ds, modelType=modelType, startdate=startdate, enddate=enddate, variableType=variableType):
         if startdate and enddate:
             ds = ds.sel(time=slice(startdate, enddate))
+            # print('/n/n/n/n', 'cutdate',)
 
         if variableType:
             ds = ds[[variableType]]
+        # print(ds)
 
         ds = model_list.get(modelType, unknown_preprocess)(ds)
 
@@ -310,21 +320,46 @@ def main(args):
         0], args[1], args[2], args[3], args[4], args[5]
 
     rp_ds = xr.open_dataset(filepath, engine='h5netcdf')
-    # print(rp_ds, startdate, enddate)
 
     rp_ds = preprocessed(rp_ds, modelType=modelType,
                          startdate=startdate, enddate=enddate, variableType=variableType)
-    # print(rp_ds)
-    print(args[2:])
-    out = interpolatedDataset(
-        grid_ds, rp_ds, modelType=modelType, startTime=startdate, endTime=enddate, variableType=variableType)
 
-    write_dir = write_dir_base + f"/{modelType}/{variableType}"
-    if not os.path.exists(write_dir):
-        os.makedirs(write_dir)
+    assert len(rp_ds.lat) > 5, 'preprocess'
 
-    out.to_netcdf(
-        write_dir + f"/{modelType}_{startdate.year}_{variableType}.nc", engine="h5netcdf")
+    try:
+        out = interpolatedDataset(grid_ds, rp_ds, modelType=modelType,
+                                  startTime=startdate, endTime=enddate, variableType=variableType)
+    except:
+        return
+
+    # print(out)
+
+    def checked(out):
+        flag = [True]
+
+        if out[variableType].data.size < 100:
+            flag.append(False)
+
+        if np.isnan(out[variableType].data).any():
+            flag.append(False)
+
+        return flag
+
+    if all(checked(out)):
+
+        write_dir = write_dir_base + f"/{modelType}/{variableType}"
+        if not os.path.exists(write_dir):
+            os.makedirs(write_dir)
+
+        out.to_netcdf(
+            write_dir + f"/{modelType}_{startdate.year}_{variableType}.nc", engine="h5netcdf")
+
+        global cnt
+        cnt += 1
+
+    else:
+        with open(f"{write_dir}/message.txt", 'a') as f:
+            f.write(f"{startdate.year} had error!\n", checked(out), '\n')
 
 
 if __name__ == '__main__':
@@ -334,7 +369,7 @@ if __name__ == '__main__':
     grid_ds = xr.open_dataset(grid_dir, engine='cfgrib')
     grid_ds = preprocessed(grid_ds, modelType='JRA')
     grid_ds = grid_ds.isel(time=0)
-
+    # print(grid_ds, '\n\n\n\n\n')
     arg_list = []
 
     for filepath in glob(rp_dir):
@@ -361,21 +396,24 @@ if __name__ == '__main__':
 
     # print(grid_ds)
     # for args in arg_list:
+        # print(args[3:])
     #     print(args[2:], "\n\n")
     #     # print(args[3:5])
     print(len(arg_list))
-    # print(f"the time would be about {len(arg_list)*35/40/60 :.2f} hours")
+    expectH = len(arg_list)*164.5*12/60/60
+    print(f"the time would be about {expectH:.2f} hours")
 
     t1 = time()
 
     for args in arg_list:
+
         main(args)
 
-        if (time() - t1) > 12*60*60:
+        if (time() - t1) > 2*60*60:
             break
 
     # Pool().map(main, arg_list)
     t2 = time()
 
     print(
-        f'run time is {t2-t1:.04f} sec, {(t2-t1)/60/60:.2f} hours, for {len(arg_list)} loops. while the predicted time is {len(arg_list)*35/40/60 :.2f} hours')
+        f'run time is {t2-t1:.04f} sec, {(t2-t1)/60/60:.2f} hours, for {cnt} loops. while the predicted time is {expectH:.2f} hours')

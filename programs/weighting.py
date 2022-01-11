@@ -13,6 +13,7 @@ import pandas as pd
 import numpy as np
 # import datetime
 from scipy import linalg
+import scipy.stats as st
 # from scipy.stats import entropy
 # import matplotlib.pyplot as plt
 
@@ -23,7 +24,7 @@ STARTDATE = '1981-01-01'
 ENDDATE = '1981-12-31'
 
 Evaluating_indices = ['modelName', 'startDate',
-                      'endDate', 'mean', 'bias', 'R', 'RMSE', 'stdev']
+                      'endDate', 'mean', 'bias', 'R', 'RMSE', 'stdev', 'w1', 'w2', 'w3']
 
 JRA_dir = '../downloads/JRA/'
 MRI_dir = "../interpolated_gcms_mon/MRI/"
@@ -76,6 +77,9 @@ class ModelPair():
     def mean(self):
         return np.array(self.model).mean()
 
+    def confidenceIterval(self):
+        return st.t.interval(alpha=0.05, df=len(self.refer)-1, loc=np.mean(abs(self.error)), scale=st.sem(abs(self.error)))
+
     def indices(self):
         dictionary = {
             'modelName': self.modelName,
@@ -85,7 +89,7 @@ class ModelPair():
             'bias': self.bias(),
             'R': self.R(),
             "RMSE": self.RMSE(),
-            'stdev': self.stdev()
+            'stdev': self.stdev(),
         }
 
         return dictionary
@@ -93,6 +97,10 @@ class ModelPair():
 
 def droppingVariablesOfds(ds, distToBound=0):
     return ds.sel(lat=slice(LATBOUND[0]-distToBound, LATBOUND[1]+distToBound), lon=slice(LONBOUND[0]-distToBound, LONBOUND[1]+distToBound))
+
+
+def weightOfMean(n):
+    return np.array([1/n]*n)
 
 
 def getVarToDim(ds):
@@ -123,66 +131,8 @@ def normalized(data):
     return (data-data.min())/(data.max() - data.min())
 
 
-def newMiniBatchGradientDecent(X, Y, weights, iters=50, batchSize=1000):
-    def learningSchedule(t):
-        t0, t1 = 200, len(Y)
-        return t0/(t+t1)
-
-    def feasibleSpace(dim):
-        I = np.identity(dim-1, dtype="int")
-        ones = np.ones(dim-1).reshape(1, dim-1)
-
-        return np.append(-I, ones, axis=0)
-
-    def projectionMatrix(A):
-        return A @ linalg.inv(A.T @ A) @ A.T
-
-    dim = len(weights)
-    weights[-1] = 1-sum(weights[:-1])
-    t, c = 0, 0
-    costHistory = [0]*iters
-    prediction = weights @ X
-    np.random.seed(42)
-    P = projectionMatrix(feasibleSpace(dim))
-    for epoch in range(iters):
-        shuffledIdx = np.random.permutation(len(Y))
-        X_shuffled = np.array(X[:][shuffledIdx])
-        Y_shuffled = Y[shuffledIdx]
-        # for data in X:
-        #     shuffledData = data[shuffledIdx]
-        #     X_shuffled.append(shuffledData)
-
-        for i in range(0, len(Y), batchSize):
-            t += 1
-            xi = X_shuffled[:][i, i+batchSize]
-            yi = Y_shuffled[i, i+batchSize]
-
-            eta = learningSchedule(t)
-            decent = 2*eta/batchSize * (xi@(prediction-yi))
-            projectedDecent = P @ decent
-
-            weights = weights-projectedDecent
-        # if weights.min() > 0:
-        #     reached_bound = False
-        # else:
-        #     if reached_bound:
-        #         break
-        #     else:
-        #         weights = np.array(weights) + projectedDecent * \
-        #             (weights.min()/projectedDecent[np.argmin(weights)])
-        #         reached_bound = True
-
-            prediction = weights @ X
-            costHistory[c] = ModelPair(Y, weights@X).MSE()
-            c += 1
-
-    # print(costHistory)
-    # print(weights)
-    return prediction, weights, costHistory
-
-
 class OptimizedWeighting():
-    def __init__(self, referData, modelData: list, alpha=0.1, iters=30):
+    def __init__(self, referData, modelData: list, alpha=0.1, iters=60, initializing_iters=20):
         '''
 
 
@@ -195,7 +145,7 @@ class OptimizedWeighting():
         alpha : TYPE, optional
             learning rate The default is 0.05.
         iters : TYPE, optional
-            times of decenting from a set of initial weights. The default is 30.
+            times of Descenting from a set of initial weights. The default is 30.
 
         '''
 
@@ -205,8 +155,9 @@ class OptimizedWeighting():
         self.alpha = alpha
 
         self.iters = iters
+        self.initializing_iters = initializing_iters
 
-    def _NewbatchGradientDesent(self, initial_weights):
+    def _newBatchGradientDesent(self, initial_weights):
 
         X = self.models
         Y = self.refer
@@ -227,41 +178,99 @@ class OptimizedWeighting():
             return np.square(model-refer).mean()
 
         dim = len(X)
-        # print(dim)
         weights[-1] = 1-sum(weights[:-1])
         costHistory = [0]*iters
-        # print(weights.shape, X.shape)
         prediction = weights @ X
         P = projectionMatrix(feasibleSpace(dim))
+
         reached_bound = 0
         for i in range(iters):
+            Descent = (alpha/len(Y)) * (X@(prediction-Y))
+            projectedDescent = P@Descent
+            weights = weights-projectedDescent
 
-            decent = (alpha/len(Y)) * (X@(prediction-Y))
-
-            projectedDecent = P@decent
-
-            weights = weights-projectedDecent
             if weights.min() > 0:
                 reached_bound = 0
             else:
                 if reached_bound >= 4:
                     break
                 else:
-                    weights = np.array(weights) + projectedDecent * \
-                        (weights.min()/projectedDecent[np.argmin(weights)])
+                    weights = np.array(weights) + projectedDescent * \
+                        (weights.min()/projectedDescent[np.argmin(weights)])
                     reached_bound += 1
 
             prediction = weights @ X
             costHistory[i] = MSE(Y, weights@X)
             print(i, weights)
-
             print(costHistory[i])
 
         # print(weights)
 
         return prediction, weights, [c for c in costHistory[::-1] if c != 0][0]
 
-    def getWeights(self, iters=20):
+    def _newMiniBatchGradientDescent(self, initial_weights, batchSize=2000):
+
+        X = self.models
+        Y = self.refer
+        iters = self.iters
+        weights = np.array(initial_weights)
+
+        all_iters = (len(Y)//batchSize)*iters
+        init_alpha = 1
+        end_alpha = 0.2*init_alpha
+
+        t0, t1 = init_alpha*end_alpha*all_iters / \
+            (init_alpha-end_alpha), end_alpha*all_iters/(init_alpha-end_alpha)
+
+        def learningSchedule(t):
+            return t0/(t+t1)
+
+        def feasibleSpace(dim):
+            I = np.identity(dim-1, dtype="int")
+            ones = np.ones(dim-1).reshape(1, dim-1)
+
+            return np.append(-I, ones, axis=0)
+
+        def projectionMatrix(A):
+            return A @ linalg.inv(A.T @ A) @ A.T
+
+        def MSE(refer, model):
+            return np.square(model-refer).mean()
+
+        dim = len(weights)
+        weights[-1] = 1-sum(weights[:-1])
+        t = 0
+        costHistory = [0]*iters
+        # prediction = weights @ X
+        P = projectionMatrix(feasibleSpace(dim))
+
+        for epoch in range(iters):
+            shuffledIdx = np.random.permutation(len(Y))
+            X_shuffled = np.array(X[:, shuffledIdx])
+            # print(X_shuffled)
+            # assert False
+            Y_shuffled = Y[shuffledIdx]
+
+            for i in range(0, len(Y), batchSize):
+                t += 1
+                xi = X_shuffled[:, i:i+batchSize]
+                yi = Y_shuffled[i: i+batchSize]
+
+                alpha = learningSchedule(t)
+                prediction = weights @ xi
+                Descent = (alpha/len(Y)) * (xi@(prediction-yi))
+                projectedDescent = P @ Descent
+
+                weights = weights-projectedDescent
+
+            costHistory[epoch] = MSE(Y, weights@X)
+            print(costHistory[epoch])
+
+        return prediction, weights, [c for c in costHistory[::-1] if c != 0][0]
+
+    def getWeights_BGD(self):
+        print('start BGD...')
+        iters = self.initializing_iters
         minMSE = float('inf')
         for i in range(iters):
 
@@ -272,12 +281,30 @@ class OptimizedWeighting():
             print(f'for {i} w is')
             print(weights)
 
-            res, weights, MSE = self._NewbatchGradientDesent(weights)
+            res, weights, MSE = self._newBatchGradientDesent(weights)
             if MSE < minMSE:
                 print(f'update! from {minMSE} to {MSE}')
 
                 minMSE = MSE
                 print(MSE)
+                bestWeights = weights
+
+        return bestWeights
+
+    def getWeights_miniBGD(self):
+        print('start miniBGD...')
+        iters = self.initializing_iters
+        minMSE = float('inf')
+        for i in range(iters):
+            weights = np.random.rand(3)
+            weights = weights/sum(weights)
+            print(f'for {i} w is')
+            print(weights)
+
+            res, weights, MSE = self._newMiniBatchGradientDescent(weights)
+            if MSE < minMSE:
+                print(f'update! from {minMSE} to {MSE}')
+                minMSE = MSE
                 bestWeights = weights
 
         return bestWeights
@@ -304,7 +331,7 @@ class REAWeighting():
         modelData_weighitng : xr.DataArray
             data for weighting periods (historical results)
         modelData_testing : xr.DatAarray
-            model data for test periods (future projection) 
+            model data for test periods (future projection)
 
         Returns
         -------
@@ -392,7 +419,7 @@ class REAWeighting():
 
         return weighted
 
-    def _compute(self, iters=20, breakBound=1/10000):
+    def _compute(self, iters=30, breakBound=1/10000):
         self.initializeRB()
         # Now we have self.RB and self.epsilon
 
@@ -460,6 +487,36 @@ def comparision(referData, modelData):
     # print(output)
     return output
 
+# class ModelEvaluation():
+#     def __init__(self,referData,modelData,indices=Evaluating_indices):
+#         self.refer = referData
+#         self.model=modelData
+#         self.output = pd.DataFrame(np.nan, index=indices)
+
+#     def periods(self,n):
+#         def split(a, n):
+#             '''
+#             To split a into n parts with as same length as possible.
+
+#             Parameters
+#             ----------
+#             a : iterable
+#             n : int
+
+#             '''
+#             k, m = divmod(len(a), n)
+#             return (a[i*k+min(i, m):(i+1)*k+min(i+1, m)] for i in range(n))
+
+#         return split(self.refer.time.to_index(),n)
+
+#     def initial(self):
+#         for testPeriod in self.periods(12):
+
+#             rest = [timeStep for timeStep in time if timeStep not in testPeriod]
+
+
+#         pass
+
 
 def evaluate(referData, modelData):
 
@@ -477,9 +534,21 @@ def evaluate(referData, modelData):
         return (a[i*k+min(i, m):(i+1)*k+min(i+1, m)] for i in range(n))
 
     time = referData.time.to_index()
-    res = np.array([])
 
-    for testPeriod in split(time, 12):
+    res_opt = pd.DataFrame(
+        np.nan, index=Evaluating_indices, columns=list(range(12)))
+
+    res_optmini, res_rea, res_mean, res_g1, res_g2, res_g3 = \
+        res_opt.copy(deep=True), res_opt.copy(deep=True), res_opt.copy(
+            deep=True), res_opt.copy(deep=True), res_opt.copy(deep=True), res_opt.copy(deep=True)
+
+    result = np.array([])
+
+    output = {'opt': res_opt, 'optmini': res_optmini, 'rea': res_rea, 'mean': res_mean, 'g1': res_g1,
+              'g2': res_g2, 'g3': res_g3}
+    out = 0
+
+    for p, testPeriod in enumerate(split(time, 12)):
 
         rest = [timeStep for timeStep in time if timeStep not in testPeriod]
 
@@ -489,20 +558,57 @@ def evaluate(referData, modelData):
         y_weight = referData.sel(time=rest)
         x_weight = [model.sel(time=rest) for model in modelData]
 
-        # weights_rea = REAWeighting(y_weight, x_weight, x_test).getWeights()
-        weights_opt = OptimizedWeighting(y_weight, x_weight).getWeights()
+        method = OptimizedWeighting(
+            y_weight, x_weight, iters=60, initializing_iters=20)
+        weights_optmini = method.getWeights_miniBGD()
+        weights_opt = method.getWeights_BGD()
 
-        # x_weighted = sum([w*x for w, x in zip(weights, x_test)])
-        # x_weighted.name = 'weighted'
-        # x_mean = sum(x_test)/len(x_test)
-        # x_mean.name = 'mean'
+        method = REAWeighting(y_weight, x_weight, x_test)
+        weights_rea = method.getWeights()
 
-        # res = np.append(res, comparision(
-        #     y_test, [x_weighted, x_mean]+x_test), axis=1) if res.size > 0 else comparision(y_test, [x_weighted, x_mean]+x_test)
-        break
+        x_optmini = sum([w*x for w, x in zip(weights_optmini, x_test)])
+        x_optmini.name = 'optmini'
+        x_opt = sum([w*x for w, x in zip(weights_opt, x_test)])
+        x_opt.name = 'opt'
+        x_rea = sum([w*x for w, x in zip(weights_rea, x_test)])
+        x_rea.name = 'REA'
+        x_mean = sum(x_test)/len(x_test)
+        x_mean.name = 'mean'
 
-    df = pd.DataFrame(res, Evaluating_indices)
-    return df
+        result_period = comparision(
+            y_test, [x_opt, x_optmini, x_rea, x_mean]+x_test)
+        all_weights = [weights_opt, weights_optmini, weights_rea,
+                       weightOfMean(len(weights_opt))]
+        all_weights = np.array(all_weights).transpose()
+
+        def addWightstoResult(result, weights):
+
+            empty = np.empty(
+                (weights.shape[0], result.shape[1]-weights.shape[1]))
+            empty[::] = np.nan
+            # print(empty.shape, weights.shape)
+            weights = np.append(weights, empty, axis=1)
+            return np.append(result, weights, axis=0)
+
+        result_period = addWightstoResult(result_period, all_weights)
+
+        result = np.append(result, result_period,
+                           axis=1) if result.size > 0 else result_period
+        out += 1
+        if out >= 2:
+            break
+        # result.shape[11,iter*7]
+    for i, modelres in enumerate(output.values()):
+
+        print(result.shape[1], len(output))
+        modelres = pd.DataFrame(
+            result[:, i::len(output)], index=Evaluating_indices, columns=list(range(result.shape[1]//len(output))))
+
+        print(modelres)
+
+    # output =
+
+    return output
 
 
 def test():
@@ -546,7 +652,7 @@ def main():
     # MRI = xr.open_dataset(MRI_dir + '/MRI.nc',
     # engine="h5netcdf")[['uas', 'vas']]
 
-    Fake = MIROC6 + 5*np.sin(CNRM)
+    Fake = MIROC6 + abs(JRA).mean()*np.sin(10*CNRM)
     MRI = Fake
     # print(JRA, MIROC6, CNRM, MRI)
 
@@ -564,20 +670,14 @@ def main():
     modelData = [MIROC6, CNRM, MRI]
 
     output = evaluate(JRA, modelData)
-    print(output)
-    # output.to_excel('../output/evaluate_REA.xlsx')
+    # print(output)
+    for modelres in output.values():
 
+        modelres.to_excel(f'../output/{modelres.iloc[0,0]}.xlsx')
 
     # print(Fake)
 if __name__ == "__main__":
     t = time()
     main()
 
-    print(f"over. time is {time()-t:.2f}")
-    print(f"over. time is {time()-t:.2f}")
-    print(f"over. time is {time()-t:.2f}")
-    print(f"over. time is {time()-t:.2f}")
-    print(f"over. time is {time()-t:.2f}")
-    print(f"over. time is {time()-t:.2f}")
-    print(f"over. time is {time()-t:.2f}")
-    print(f"over. time is {time()-t:.2f}")
+    print(f"over. time is {time()-t:.2f} sec")
