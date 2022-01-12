@@ -4,7 +4,6 @@
 
 These programs are created for **personal purpose** (bachelor research project). 
 
-They are not expected to be read or use by someone except for the author.
+Also, there is **neither co-writer nor co-worker** that would read or use these programs. The supervisor of the theis would not read or check the codes as well.
 
-
-Consequentially, **the readablitiy and generalization ability is poor.**
+Due to the time limit of this bachelor research project, **the readablitiy and generalization ability of the programs is poor.**
