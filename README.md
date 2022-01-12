@@ -16,11 +16,11 @@ to do IDW interpolation. The old version for new_interp.py. This one is not reco
 
 #### new interp.py:
 
-To do spatial IDW interpolation for climate models. Much faster than interpolation.py even without multiprocessing.
+To do spatial IDW interpolation for climate models. Much faster than interpolation.py even without multiprocessing. **Recommended**
 
 #### weighting.py
 
-Assigning weights and do statistical evaluation for weighted models and raw models.
+Assigning weights and do statistical evaluation for weighted models and raw models. **Recommended**
 
 #### output_bathy.py & output_wind.py
 
