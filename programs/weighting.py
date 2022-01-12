@@ -6,25 +6,27 @@ Created on Thu Nov 25 15:34:55 2021
 @author: wangshiyuan
 """
 
+import matplotlib.pyplot as plt
+import scipy.stats as st
+from scipy import linalg
 import xarray as xr
 from time import time
 from math import sqrt
 import pandas as pd
 import numpy as np
+import sys
+np.set_printoptions(threshold=False)
 # import datetime
-from scipy import linalg
-import scipy.stats as st
 # from scipy.stats import entropy
-# import matplotlib.pyplot as plt
 
 
 LATBOUND = [-10, 60]
 LONBOUND = [95, 180]
-STARTDATE = '1981-01-01'
-ENDDATE = '1981-12-31'
+STARTDATE = '1960-01-01'
+ENDDATE = '2014-12-31'
 
 Evaluating_indices = ['modelName', 'startDate',
-                      'endDate', 'mean', 'bias', 'R', 'RMSE', 'stdev', 'w1', 'w2', 'w3']
+                      'endDate', 'mean', 'bias', 'R', 'RMSE', 'stdev', 'ci99',  'ci95', 'w1', 'w2', 'w3']
 
 JRA_dir = '../downloads/JRA/'
 MRI_dir = "../interpolated_gcms_mon/MRI/"
@@ -77,8 +79,14 @@ class ModelPair():
     def mean(self):
         return np.array(self.model).mean()
 
-    def confidenceIterval(self):
-        return st.t.interval(alpha=0.05, df=len(self.refer)-1, loc=np.mean(abs(self.error)), scale=st.sem(abs(self.error)))
+    def confidenceIterval(self, alpha):
+        # plt.plot(sorted(self.error()))
+        # plt.show()
+
+        _ = st.t.interval(alpha=alpha, df=len(
+            self.error())-1, loc=self.error().mean(), scale=st.sem(self.error()))
+        # print(_)
+        return _
 
     def indices(self):
         dictionary = {
@@ -90,6 +98,8 @@ class ModelPair():
             'R': self.R(),
             "RMSE": self.RMSE(),
             'stdev': self.stdev(),
+            'ci99': self.confidenceIterval(0.99),
+            'ci95': self.confidenceIterval(0.95),
         }
 
         return dictionary
@@ -264,7 +274,7 @@ class OptimizedWeighting():
                 weights = weights-projectedDescent
 
             costHistory[epoch] = MSE(Y, weights@X)
-            print(costHistory[epoch])
+            print(epoch, ': ', costHistory[epoch])
 
         return prediction, weights, [c for c in costHistory[::-1] if c != 0][0]
 
@@ -295,8 +305,15 @@ class OptimizedWeighting():
         print('start miniBGD...')
         iters = self.initializing_iters
         minMSE = float('inf')
+        if iters == 1:
+
+            weights = np.array([1/len(self.models)]*len(self.models))
+            print('weights are', weights)
+            res, weights, MSE = self._newMiniBatchGradientDescent(weights)
+            return weights
+
         for i in range(iters):
-            weights = np.random.rand(3)
+            weights = np.random.rand(len(self.models))
             weights = weights/sum(weights)
             print(f'for {i} w is')
             print(weights)
@@ -453,7 +470,7 @@ class REAWeighting():
         return self.weights
 
 
-def comparision(referData, modelData):
+def compare(referData, modelData):
     '''
 
 
@@ -471,51 +488,21 @@ def comparision(referData, modelData):
 
     output = np.array([])
 
-    for i, modelData in enumerate(modelData):
+    for i, md in enumerate(modelData):
         if type(referData) is list:
 
             pair = ModelPair(referData[i], modelData)
         else:
-            pair = ModelPair(referData, modelData)
+            pair = ModelPair(referData, md)
 
         indices = np.array(
-            [v for v in pair.indices().values()]).reshape(-1, 1)
+            [v for v in pair.indices().values()], dtype=object).reshape(-1, 1)
 
         output = np.append(
             output, indices, axis=1) if output.size > 0 else np.array(indices)
 
     # print(output)
     return output
-
-# class ModelEvaluation():
-#     def __init__(self,referData,modelData,indices=Evaluating_indices):
-#         self.refer = referData
-#         self.model=modelData
-#         self.output = pd.DataFrame(np.nan, index=indices)
-
-#     def periods(self,n):
-#         def split(a, n):
-#             '''
-#             To split a into n parts with as same length as possible.
-
-#             Parameters
-#             ----------
-#             a : iterable
-#             n : int
-
-#             '''
-#             k, m = divmod(len(a), n)
-#             return (a[i*k+min(i, m):(i+1)*k+min(i+1, m)] for i in range(n))
-
-#         return split(self.refer.time.to_index(),n)
-
-#     def initial(self):
-#         for testPeriod in self.periods(12):
-
-#             rest = [timeStep for timeStep in time if timeStep not in testPeriod]
-
-
-#         pass
 
 
 def evaluate(referData, modelData):
@@ -533,22 +520,12 @@ def evaluate(referData, modelData):
         k, m = divmod(len(a), n)
         return (a[i*k+min(i, m):(i+1)*k+min(i+1, m)] for i in range(n))
 
+    n_splits = 12
+    n_models = 3+3
     time = referData.time.to_index()
-
-    res_opt = pd.DataFrame(
-        np.nan, index=Evaluating_indices, columns=list(range(12)))
-
-    res_optmini, res_rea, res_mean, res_g1, res_g2, res_g3 = \
-        res_opt.copy(deep=True), res_opt.copy(deep=True), res_opt.copy(
-            deep=True), res_opt.copy(deep=True), res_opt.copy(deep=True), res_opt.copy(deep=True)
-
     result = np.array([])
 
-    output = {'opt': res_opt, 'optmini': res_optmini, 'rea': res_rea, 'mean': res_mean, 'g1': res_g1,
-              'g2': res_g2, 'g3': res_g3}
-    out = 0
-
-    for p, testPeriod in enumerate(split(time, 12)):
+    for p, testPeriod in enumerate(split(time, n_splits)):
 
         rest = [timeStep for timeStep in time if timeStep not in testPeriod]
 
@@ -559,26 +536,28 @@ def evaluate(referData, modelData):
         x_weight = [model.sel(time=rest) for model in modelData]
 
         method = OptimizedWeighting(
-            y_weight, x_weight, iters=60, initializing_iters=20)
+            y_weight, x_weight, iters=30, initializing_iters=1)
         weights_optmini = method.getWeights_miniBGD()
-        weights_opt = method.getWeights_BGD()
+        # method = OptimizedWeighting(y_weight, x_weight)
+        # weights_opt = method.getWeights_BGD()
 
         method = REAWeighting(y_weight, x_weight, x_test)
         weights_rea = method.getWeights()
 
         x_optmini = sum([w*x for w, x in zip(weights_optmini, x_test)])
         x_optmini.name = 'optmini'
-        x_opt = sum([w*x for w, x in zip(weights_opt, x_test)])
-        x_opt.name = 'opt'
+        # x_opt = sum([w*x for w, x in zip(weights_opt, x_test)])
+        # x_opt.name = 'opt'
         x_rea = sum([w*x for w, x in zip(weights_rea, x_test)])
         x_rea.name = 'REA'
         x_mean = sum(x_test)/len(x_test)
         x_mean.name = 'mean'
 
-        result_period = comparision(
-            y_test, [x_opt, x_optmini, x_rea, x_mean]+x_test)
-        all_weights = [weights_opt, weights_optmini, weights_rea,
-                       weightOfMean(len(weights_opt))]
+        result_period = compare(
+            y_test, [x_optmini, x_rea, x_mean]+x_test)
+
+        all_weights = [weights_optmini, weights_rea,
+                       weightOfMean(len(weights_optmini))]
         all_weights = np.array(all_weights).transpose()
 
         def addWightstoResult(result, weights):
@@ -594,19 +573,15 @@ def evaluate(referData, modelData):
 
         result = np.append(result, result_period,
                            axis=1) if result.size > 0 else result_period
-        out += 1
-        if out >= 2:
-            break
-        # result.shape[11,iter*7]
-    for i, modelres in enumerate(output.values()):
 
-        print(result.shape[1], len(output))
+    output = []
+
+    for i in range(n_models):
+
         modelres = pd.DataFrame(
-            result[:, i::len(output)], index=Evaluating_indices, columns=list(range(result.shape[1]//len(output))))
+            result[:, i::n_models], index=Evaluating_indices, columns=list(range(result.shape[1]//n_models)))
 
-        print(modelres)
-
-    # output =
+        output.append(modelres)
 
     return output
 
@@ -649,33 +624,57 @@ def main():
                              engine="h5netcdf")[['uas', 'vas']]
     CNRM = xr.open_dataset(CNRM_dir + "/CNRM-ESM2-1.nc",
                            engine="h5netcdf")[['uas', 'vas']]
-    # MRI = xr.open_dataset(MRI_dir + '/MRI.nc',
-    # engine="h5netcdf")[['uas', 'vas']]
+    MRI = xr.open_dataset(MRI_dir + '/MRI.nc',
+                          engine="h5netcdf")[['uas', 'vas']]
 
-    Fake = MIROC6 + abs(JRA).mean()*np.sin(10*CNRM)
-    MRI = Fake
-    # print(JRA, MIROC6, CNRM, MRI)
+    # Fake = MIROC6 + abs(JRA).mean()*np.sin(10*CNRM)
+    # MRI = Fake
 
-    # print(JRA)
-
+    # MRI.uas.isel(time=100).plot()
+    # assert False
     JRA = 0*MIROC6 + JRA
+    MRI = 0*MIROC6 + MRI
 
-    JRA, MIROC6, CNRM, MRI = [getVarToDim(
-        ds) for ds in [JRA, MIROC6, CNRM, MRI]][:]
+    JRA, MIROC6, CNRM, MRI = (ds.to_array() for ds in [JRA, MIROC6, CNRM, MRI])
+
     JRA, MIROC6, CNRM, MRI = JRA.rename('JRA'), MIROC6.rename(
         'MIROC6'), CNRM.rename('CNRM'), MRI.rename('MRI')
 
-    # print(JRA, MIROC6, CNRM, Fake)
-
     modelData = [MIROC6, CNRM, MRI]
 
+    def plot():
+        from mpl_toolkits.mplot3d import Axes3D
+        # from matplotlib import cm
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+
+        weights = np.random.rand(100, 3)
+        weights = weights/weights.sum(axis=1)[:, np.newaxis]
+
+        md = np.array([m.data.ravel() for m in modelData])
+        J = JRA.data.ravel()
+
+        # print(weights.shape, md.shape)
+
+        z = np.square(weights@md-[J]*weights.shape[0]).mean(axis=1)
+
+        print(z.shape)
+
+        ax.view_init(45, 60)
+
+        img = ax.scatter(weights[:, 0], weights[:, 1],
+                         weights[:, 2], c=z, cmap=plt.hot())
+        fig.colorbar(img)
+        plt.show()
+    # plot()
+
     output = evaluate(JRA, modelData)
-    # print(output)
-    for modelres in output.values():
+    for modelres in output:
+        print(modelres)
 
         modelres.to_excel(f'../output/{modelres.iloc[0,0]}.xlsx')
 
-    # print(Fake)
+
 if __name__ == "__main__":
     t = time()
     main()

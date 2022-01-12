@@ -13,7 +13,7 @@ from scipy.spatial import cKDTree
 import matplotlib.pyplot as plt
 from math import radians, cos, sin, asin, sqrt
 from tqdm import tqdm
-
+import os
 
 LATBOUND = [-10, 60]
 LONBOUND = [95, 180]
@@ -196,16 +196,16 @@ def IDWInterpolation(grid_ds, value_da, N=4, exponent=2):
 
         return prediction
 
-    # test = np.array(getValue(value_da, locs_all[0], weights_all[0]))
-    # print(test)
-    # assert False
-
     print('all iters:', len(locs_all))
     values = np.array([getValue(value_da, locs, weights)
                        for locs, weights in tqdm(zip(locs_all, weights_all))])
 
-    values = values.reshape((len(lon), len(lat), len(time), len(variable)))
-    values = np.transpose(values, (1, 0, 2, 3))
+    # print(values.shape) # (lon*lat, variable, time)
+
+    # assert False
+
+    values = values.reshape((len(lon), len(lat), len(variable), len(time)))
+    values = np.transpose(values, (1, 0, 3, 2))
 
     # new = np.empty((len(lat), len(lon), len(time)))
     # k = 0
@@ -228,16 +228,26 @@ if __name__ == '__main__':
 
     value_ds = preprocessed(value_ds, 'MRI', STARTDATE, ENDDATE)
     value_da = value_ds.to_array()
+
     # print(value_da['variable'])
 
     grid_ds = xr.open_dataset(grid_dir, engine='cfgrib')
     grid_ds = preprocessed(grid_ds, 'JRA')
     grid_ds = droppingVariablesOfds(grid_ds)
+    t = 100
 
     res = IDWInterpolation(grid_ds, value_da)
-    res.isel(time=0, variable=0).plot()
+    res = res.to_dataset('variable')
+    res.uas.isel(time=t).plot()
 
     res.to_netcdf(
         '/home/waterlab/Wang/bachelor_thesis/interpolated_gcms_mon/MRI/MRI.nc', engine='h5netcdf')
-    # value_da = droppingVariablesOfds(value_da)
-    # value_da.isel(time=0).plot()
+    # print(os.getcwd())
+    # MRI_dir = "../interpolated_gcms_mon/MRI/"
+    # MRI = xr.open_dataset(MRI_dir + '/MRI.nc',
+    #                       engine="h5netcdf")[['uas', 'vas']]
+
+    # MRI.uas.isel(time=t).plot()
+
+    # value_ds = droppingVariablesOfds(value_ds)
+    # value_ds.uas.isel(time=t).plot()
