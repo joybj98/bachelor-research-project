@@ -20,7 +20,7 @@ To do spatial IDW interpolation for climate models. Much faster than interpolati
 
 #### weighting.py
 
-Assigning weights and do statistical evaluation for weighted models and raw models. **Recommended**
+Assigning weights and do statistical evaluation for weighted average data raw datah. **Recommended**
 
 #### output_bathy.py & output_wind.py
 
@@ -32,7 +32,7 @@ Concacting JRA-55 data into one file. Though this process may be meaningless.
 
 #### compute_mean_of_variants.py
 
-Compute the mean of multiple variants (ensembles) for a type of climate model
+Compute the mean of multiple variants (ensembles) for one type of climate model
 
 
 
