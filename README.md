@@ -1,4 +1,4 @@
-# bachelor-thesis
+# bachelor-research-project
 
 ***
 
