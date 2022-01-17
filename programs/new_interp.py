@@ -6,7 +6,6 @@ Created on Mon Jan 10 19:09:06 2022
 @author: waterlab
 """
 
-
 import xarray as xr
 import numpy as np
 from scipy.spatial import cKDTree
@@ -14,6 +13,7 @@ import matplotlib.pyplot as plt
 from math import radians, cos, sin, asin, sqrt
 from tqdm import tqdm
 import os
+from glob import glob
 
 LATBOUND = [-10, 60]
 LONBOUND = [95, 180]
@@ -77,7 +77,6 @@ def preprocessed(ds, modelType='', startdate=None, enddate=None, variableType=No
     def main_preprocess(ds, modelType=modelType, startdate=startdate, enddate=enddate, variableType=variableType):
         if startdate and enddate:
             ds = ds.sel(time=slice(startdate, enddate))
-            # print('/n/n/n/n', 'cutdate',)
 
         if variableType:
             ds = ds[[variableType]]
@@ -174,8 +173,11 @@ def IDWInterpolation(grid_ds, value_da, N=4, exponent=2):
         Parameters
         ----------
         value_da : xr.DataArray
-            the dataArray that to be interpolated. the interpolation would 
-            implemented for every time step (and every varibale) by the same method (and weights)
+            the dataArray that to be interpolated. 
+
+            The interpolation would be implemented for every time step
+            (and every varibale) by the same method (and weights)
+
         locs : list or np.ndarray
             locations of N nearest points. the shape should be (N,2)
         weights : list or np.ndarray
@@ -200,54 +202,67 @@ def IDWInterpolation(grid_ds, value_da, N=4, exponent=2):
     values = np.array([getValue(value_da, locs, weights)
                        for locs, weights in tqdm(zip(locs_all, weights_all))])
 
-    # print(values.shape) # (lon*lat, variable, time)
-
-    # assert False
+    # print(values.shape) -> (lon*lat, variable, time)
 
     values = values.reshape((len(lon), len(lat), len(variable), len(time)))
     values = np.transpose(values, (1, 0, 3, 2))
-
-    # new = np.empty((len(lat), len(lon), len(time)))
-    # k = 0
-    # for i in range(len(lon)):
-    #     for j in range(len(lat)):
-    #         new[j][i] = values[k]
-    #         k += 1
 
     res = xr.DataArray(
         values, coords=[lat, lon, time, variable], dims=['lat', 'lon', 'time', 'variable'])
     return res
 
 
-if __name__ == '__main__':
+def getName(path):
+    return os.path.splitext(os.path.basename(path))[0]
 
-    value_ds = xr.open_dataset(
-        '/home/waterlab/Wang/bachelor_thesis/downloads/GCMs/MRI/MRI.nc', engine='h5netcdf')
 
-    grid_dir = '/home/waterlab/Wang/bachelor_thesis/downloads/JRA/rawdownloads/uas/anl_mdl.033_ugrd.reg_tl319.196101_196112.wang528867'
+def main(filepath, grid_ds, write=False):
 
-    value_ds = preprocessed(value_ds, 'MRI', STARTDATE, ENDDATE)
+    modelType = getName(filepath)
+
+    value_ds = xr.open_dataset(filepath, engine='h5netcdf')
+    value_ds = preprocessed(value_ds, modelType, STARTDATE, ENDDATE)
+    print(value_ds)
+    return
     value_da = value_ds.to_array()
 
-    # print(value_da['variable'])
+    res = IDWInterpolation(grid_ds, value_da)
+    res = res.to_dataset('variable')
+
+    if write:
+
+        res.to_netcdf(
+            f'/home/waterlab/Wang/bachelor_thesis/interpolated_gcms_mon/{modelType}/{modelType}_new.nc', engine='h5netcdf')
+
+    return res
+
+
+if __name__ == '__main__':
+
+    gcm_dir = '/home/waterlab/Wang/bachelor_thesis/downloads/GCMs/'
+
+    grid_dir = '/home/waterlab/Wang/bachelor_thesis/downloads/JRA/rawdownloads/uas/anl_mdl.033_ugrd.reg_tl319.196101_196112.wang528867'
 
     grid_ds = xr.open_dataset(grid_dir, engine='cfgrib')
     grid_ds = preprocessed(grid_ds, 'JRA')
     grid_ds = droppingVariablesOfds(grid_ds)
-    t = 100
 
-    res = IDWInterpolation(grid_ds, value_da)
-    res = res.to_dataset('variable')
-    res.uas.isel(time=t).plot()
+    for filepath in glob(gcm_dir+'*/*.nc'):
 
-    res.to_netcdf(
-        '/home/waterlab/Wang/bachelor_thesis/interpolated_gcms_mon/MRI/MRI.nc', engine='h5netcdf')
-    # print(os.getcwd())
-    # MRI_dir = "../interpolated_gcms_mon/MRI/"
-    # MRI = xr.open_dataset(MRI_dir + '/MRI.nc',
-    #                       engine="h5netcdf")[['uas', 'vas']]
+        if getName(filepath) == 'MRI':
+            continue
 
-    # MRI.uas.isel(time=t).plot()
+        res = main(filepath, grid_ds, write=True)
+        print(res)
+
+    t = 0
+
+    write_dir = '/home/waterlab/Wang/bachelor_thesis/interpolated_gcms_mon/MIROC6'
+    MIROC6 = xr.open_dataset(write_dir + '/MIROC6_new.nc',
+                             engine="h5netcdf")[['uas', 'vas']]
+
+    # value_ds = xr.open_dataset(gcm_dir+'MIROC6/MIROC6.nc', engine='h5netcdf')
+    # value_ds = preprocessed(value_ds, 'MIROC6', STARTDATE, ENDDATE)
 
     # value_ds = droppingVariablesOfds(value_ds)
     # value_ds.uas.isel(time=t).plot()
