@@ -14,28 +14,56 @@ from time import time
 from math import sqrt
 import pandas as pd
 import numpy as np
+import os
+from glob import glob
 import sys
 np.set_printoptions(threshold=False)
 # import datetime
 # from scipy.stats import entropy
 
 
-LATBOUND = [-10, 60]
-LONBOUND = [95, 180]
 STARTDATE = '1960-01-01'
 ENDDATE = '2014-12-31'
 
 Evaluating_indices = ['modelName', 'startDate',
-                      'endDate', 'mean', 'bias', 'R', 'RMSE', 'stdev', 'ci99',  'ci95', 'w1', 'w2', 'w3']
+                      'endDate', 'mean', 'stdev', 'interval', 'ci99', 'ci95', 'bias', 'R', 'RMSE', 'RSD', 'eci99',  'eci95']
 
 JRA_dir = '../downloads/JRA/'
-MRI_dir = "../interpolated_gcms_mon/MRI/"
-MIROC6_dir = "../interpolated_gcms_mon/MIROC6/"
-CNRM_dir = "../interpolated_gcms_mon/CNRM-ESM2-1/"
+
+model_dir = "../interpolated_gcms_mon/"
+
+testing = True
+testing = False
+
+
+def plot(JRA, modelData):
+    from mpl_toolkits.mplot3d import Axes3D
+    # from matplotlib import cm
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+
+    weights = np.random.rand(100, 3)
+    weights = weights/weights.sum(axis=1)[:, np.newaxis]
+
+    md = np.array([m.data.ravel() for m in modelData])
+    J = JRA.data.ravel()
+
+    # print(weights.shape, md.shape)
+
+    z = np.square(weights@md-[J]*weights.shape[0]).mean(axis=1)
+
+    print(z.shape)
+
+    ax.view_init(45, 60)
+
+    img = ax.scatter(weights[:, 0], weights[:, 1],
+                     weights[:, 2], c=z, cmap=plt.hot())
+    fig.colorbar(img)
+    plt.show()
 
 
 class ModelPair():
-    def __init__(self, referModel, model):
+    def __init__(self, referModel, model, givenModelName=None):
         '''
 
 
@@ -55,58 +83,80 @@ class ModelPair():
         self.model = model.ravel() if type(model) is np.ndarray else model.data.ravel()
         self.startDate = model.time.to_index()[0].strftime('%Y-%m')
         self.endDate = model.time.to_index()[-1].strftime('%Y-%m')
-        self.modelName = model.name
+        self.error = np.array(self.model-self.refer)
 
-    def error(self):
-        return np.array(self.model - self.refer)
+        if model.name:
+            self.modelName = model.name
+        elif givenModelName:
+            self.modelName = givenModelName
+        else:
+            try:
+                self.modelName = str(model.modelName.values)
+            except:
+                self.modelName = None
 
     def bias(self):
-        return self.error().mean()
+        return self.error.mean()
+
+    def stdev(self):
+        return np.std(self.model)
+
+    def interval(self):
+        return (self.model.max(), self.model.min())
 
     def R(self):
         return np.corrcoef(self.refer, self.model)[0][1]
     # using R[0][1] is because R is a 2 by 2 matrix. which includes Rxx,Rxy,Ryx,Ryy. And we only use Rxy (equals to Ryx)
 
     def MSE(self):
-        return np.square(self.error()).mean()
+        return np.square(self.error).mean()
 
     def RMSE(self):
         return sqrt(self.MSE())
 
-    def stdev(self):
-        return np.std(self.error())
+    def RSD(self):
+        return self.stdev()/np.std(self.refer)
 
     def mean(self):
         return np.array(self.model).mean()
 
-    def confidenceIterval(self, alpha):
+    def confidenceInterval(self, data, alpha):
         # plt.plot(sorted(self.error()))
         # plt.show()
 
-        _ = st.t.interval(alpha=alpha, df=len(
-            self.error())-1, loc=self.error().mean(), scale=st.sem(self.error()))
+        _ = st.t.interval(alpha=alpha, df=len(data)-1,
+                          loc=data.mean(), scale=st.sem(data))
         # print(_)
         return _
 
     def indices(self):
+        '''
+        Note that the Evaluating_indices must be a subset of this dictionary.
+        '''
         dictionary = {
             'modelName': self.modelName,
             'startDate': self.startDate,
             'endDate': self.endDate,
             'mean': self.mean(),
+            'stdev': self.stdev(),
+            'interval': self.interval(),
+            'ci99': self.confidenceInterval(self.model, 0.99),
+            'ci95': self.confidenceInterval(self.model, 0.95),
             'bias': self.bias(),
             'R': self.R(),
             "RMSE": self.RMSE(),
-            'stdev': self.stdev(),
-            'ci99': self.confidenceIterval(0.99),
-            'ci95': self.confidenceIterval(0.95),
+            'RSD': self.RSD(),
+            'eci99': self.confidenceInterval(self.error, 0.99),
+            'eci95': self.confidenceInterval(self.error, 0.95),
         }
 
-        return dictionary
+        res = [dictionary[Evaluating_indices[0]]]
 
+        for key in Evaluating_indices[1:]:
 
-def droppingVariablesOfds(ds, distToBound=0):
-    return ds.sel(lat=slice(LATBOUND[0]-distToBound, LATBOUND[1]+distToBound), lon=slice(LONBOUND[0]-distToBound, LONBOUND[1]+distToBound))
+            res.append(dictionary[key])
+
+        return res
 
 
 def weightOfMean(n):
@@ -167,6 +217,10 @@ class OptimizedWeighting():
         self.iters = iters
         self.initializing_iters = initializing_iters
 
+        if testing:
+            self.iters = 3
+            self.initializing_iters = 1
+
     def _newBatchGradientDesent(self, initial_weights):
 
         X = self.models
@@ -226,7 +280,7 @@ class OptimizedWeighting():
         weights = np.array(initial_weights)
 
         all_iters = (len(Y)//batchSize)*iters
-        init_alpha = 1
+        init_alpha = 2
         end_alpha = 0.2*init_alpha
 
         t0, t1 = init_alpha*end_alpha*all_iters / \
@@ -275,6 +329,7 @@ class OptimizedWeighting():
 
             costHistory[epoch] = MSE(Y, weights@X)
             print(epoch, ': ', costHistory[epoch])
+            print(weights)
 
         return prediction, weights, [c for c in costHistory[::-1] if c != 0][0]
 
@@ -308,6 +363,8 @@ class OptimizedWeighting():
         if iters == 1:
 
             weights = np.array([1/len(self.models)]*len(self.models))
+            # weights = np.random.rand(len(self.models))
+            # weights = weights/sum(weights)
             print('weights are', weights)
             res, weights, MSE = self._newMiniBatchGradientDescent(weights)
             return weights
@@ -337,7 +394,7 @@ class REAWeighting():
 
     '''
 
-    def __init__(self, referData_weighting, modelData_weighitng, modelData_testing):
+    def __init__(self, referData_weighting, modelData_weighitng, modelData_testing, iters=30):
         '''
 
 
@@ -363,6 +420,9 @@ class REAWeighting():
         self.weights = [1/len(self.models)]*len(self.models)
         self.res = np.array(None)
         self.computed = False
+        self.iters = iters
+        if testing:
+            self.iters = 3
 
     def initializeRB(self):
         def getB(self):
@@ -436,13 +496,14 @@ class REAWeighting():
 
         return weighted
 
-    def _compute(self, iters=30, breakBound=1/10000):
+    def _compute(self, breakBound=1/10000):
+
         self.initializeRB()
         # Now we have self.RB and self.epsilon
 
         MSE = float('inf')
 
-        for _ in range(iters):
+        for _ in range(self.iters):
 
             res = self._getWeightedMean()
             # print(self.weights)
@@ -496,7 +557,7 @@ def compare(referData, modelData):
             pair = ModelPair(referData, md)
 
         indices = np.array(
-            [v for v in pair.indices().values()], dtype=object).reshape(-1, 1)
+            [v for v in pair.indices()], dtype=object).reshape(-1, 1)
 
         output = np.append(
             output, indices, axis=1) if output.size > 0 else np.array(indices)
@@ -520,11 +581,11 @@ def evaluate(referData, modelData):
         k, m = divmod(len(a), n)
         return (a[i*k+min(i, m):(i+1)*k+min(i+1, m)] for i in range(n))
 
-    n_splits = 12
-    n_models = 3+3
+    n_splits = 10
+    n_models = len(modelData)+3
     time = referData.time.to_index()
     result = np.array([])
-
+    cnt = 0
     for p, testPeriod in enumerate(split(time, n_splits)):
 
         rest = [timeStep for timeStep in time if timeStep not in testPeriod]
@@ -574,12 +635,23 @@ def evaluate(referData, modelData):
         result = np.append(result, result_period,
                            axis=1) if result.size > 0 else result_period
 
+        if testing:
+            cnt += 1
+            if cnt > 1:
+                break
+
     output = []
+
+    for r in result:
+        print(r)
 
     for i in range(n_models):
 
+        all_indices = Evaluating_indices + \
+            [f'w{i+1}' for i in range(len(modelData))]
+
         modelres = pd.DataFrame(
-            result[:, i::n_models], index=Evaluating_indices, columns=list(range(result.shape[1]//n_models)))
+            result[:, i::n_models], index=all_indices, columns=list(range(result.shape[1]//n_models)))
 
         output.append(modelres)
 
@@ -587,6 +659,10 @@ def evaluate(referData, modelData):
 
 
 def test():
+    '''
+    for testing and checking runtime at the start of this program
+    now I dont use this at all
+    '''
 
     time = pd.date_range('1970-01-01', freq='MS', periods=12*45)
     y = xr.Dataset(
@@ -613,70 +689,106 @@ def test():
 
     print(z.getRes())
 
-    # evaluate( y, lst)
-
 
 def main():
-    JRA = xr.open_dataset(JRA_dir + "/JRA.nc",
-                          engine="h5netcdf")[['uas', 'vas']]
+    '''
+    ======================= settings ==============================
+    '''
 
-    MIROC6 = xr.open_dataset(MIROC6_dir + "/MIROC6.nc",
-                             engine="h5netcdf")[['uas', 'vas']]
-    CNRM = xr.open_dataset(CNRM_dir + "/CNRM-ESM2-1.nc",
-                           engine="h5netcdf")[['uas', 'vas']]
-    MRI = xr.open_dataset(MRI_dir + '/MRI.nc',
-                          engine="h5netcdf")[['uas', 'vas']]
+    ALL_VARIABLE = ['uas', 'vas']
+    FOCUSING_VARIABLE = ['vas']
 
-    # Fake = MIROC6 + abs(JRA).mean()*np.sin(10*CNRM)
-    # MRI = Fake
+    LATBOUND = [-10, 60]
+    LONBOUND = [95, 180]
 
-    # MRI.uas.isel(time=100).plot()
+    # LATBOUND = [-10, 60]
+    # LONBOUND = [120, 152]
+
+    '''
+    all domain:
+    LATBOUND = [-10,60]
+    LONBOUND = [95,180]
+    '''
+
+    FILENAME = 'vas'
+
+    HAVEFAKE = False
+
+    '''
+    ========================= Preprocessing ===================================
+    '''
+
+    all_path = [JRA_dir + 'JRA.nc'] + sorted(glob(model_dir+'*/*.nc'))
+
+    def getName(path):
+        return str(os.path.splitext(os.path.basename(path))[0])
+
+    all_name = pd.Index([getName(path)
+                         for path in all_path], name='modelName')
+
+    def findtime():
+        with xr.open_dataset(all_path[1], engine='h5netcdf') as ds:
+            time = ds.sel(time=slice(STARTDATE, ENDDATE)).time
+            time.load()
+        return time
+
+    time = findtime()
+
+    def process_one_path(path):
+        with xr.open_dataset(path, engine='h5netcdf') as ds:
+            ds = transformed(ds)
+            ds.load()
+        return ds
+
+    def transformed(ds):
+        ds = ds[FOCUSING_VARIABLE]
+        ds = ds.sel(time=slice(STARTDATE, ENDDATE))
+        ds = ds.assign_coords(time=time)
+
+        ds = ds.sel(lat=slice(LATBOUND[0], LATBOUND[1]), lon=slice(
+            LONBOUND[0], LONBOUND[1]))
+
+        return ds.to_array()
+
+    all_data = [process_one_path(p) for p in all_path]
+
+    '''
+    all_data[0] is JRA, else are GCMs
+    '''
+
+    if HAVEFAKE:
+        all_data[4] = all_data[5] + \
+            abs(all_data[0]).mean()*np.sin(10*all_data[1])
+
+    all_models = xr.concat(all_data, all_name)
+
+    # print(type(all_models.modelName[1].values))
+    print('concat over')
+    print(all_models)
+
+    # for p in [ModelPair(all_models[0], m) for m in all_models]:
+    #     print(p.indices())
     # assert False
-    JRA = 0*MIROC6 + JRA
-    MRI = 0*MIROC6 + MRI
 
-    JRA, MIROC6, CNRM, MRI = (ds.to_array() for ds in [JRA, MIROC6, CNRM, MRI])
+    write_dir = f'../output/{FILENAME}.xlsx'
 
-    JRA, MIROC6, CNRM, MRI = JRA.rename('JRA'), MIROC6.rename(
-        'MIROC6'), CNRM.rename('CNRM'), MRI.rename('MRI')
+    '''
+    ==================== Process and Write ========================
+    '''
 
-    modelData = [MIROC6, CNRM, MRI]
+    output = evaluate(all_models[0], all_models[1:])
 
-    def plot():
-        from mpl_toolkits.mplot3d import Axes3D
-        # from matplotlib import cm
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
+    with open(write_dir, 'w+'):
+        pass
 
-        weights = np.random.rand(100, 3)
-        weights = weights/weights.sum(axis=1)[:, np.newaxis]
-
-        md = np.array([m.data.ravel() for m in modelData])
-        J = JRA.data.ravel()
-
-        # print(weights.shape, md.shape)
-
-        z = np.square(weights@md-[J]*weights.shape[0]).mean(axis=1)
-
-        print(z.shape)
-
-        ax.view_init(45, 60)
-
-        img = ax.scatter(weights[:, 0], weights[:, 1],
-                         weights[:, 2], c=z, cmap=plt.hot())
-        fig.colorbar(img)
-        plt.show()
-    # plot()
-
-    output = evaluate(JRA, modelData)
-    for modelres in output:
-        print(modelres)
-
-        modelres.to_excel(f'../output/{modelres.iloc[0,0]}.xlsx')
+    with pd.ExcelWriter(write_dir, mode='w') as writer:
+        for modelres in output:
+            modelres.to_excel(writer, sheet_name=f'{modelres.iloc[0,0]}')
 
 
 if __name__ == "__main__":
     t = time()
+
     main()
 
     print(f"over. time is {time()-t:.2f} sec")

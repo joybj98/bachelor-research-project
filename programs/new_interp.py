@@ -3,7 +3,7 @@
 """
 Created on Mon Jan 10 19:09:06 2022
 
-@author: waterlab
+@author: shiyaun wang
 """
 
 import xarray as xr
@@ -30,7 +30,7 @@ def droppingVariablesOfds(ds, distToBound=0):
     return ds.sel(lat=slice(LATBOUND[0]-distToBound, LATBOUND[1]+distToBound), lon=slice(LONBOUND[0]-distToBound, LONBOUND[1]+distToBound))
 
 
-def preprocessed(ds, modelType='', startdate=None, enddate=None, variableType=None):
+def preprocessed(ds, modelType='', startdate=None, enddate=None, variableType=None, drop=False):
     def JRA_preprocess(ds):
         if "u" in ds:
             ds = ds.rename({"u": "uas"})
@@ -44,7 +44,6 @@ def preprocessed(ds, modelType='', startdate=None, enddate=None, variableType=No
         return ds
 
     def MRI_preprocess(ds):
-        # print('here\n\n\n\n')
         # ds = ds.drop_vars(['time_bnds', 'lon_bnds', 'lat_bnds'])
         ds["time"] = ds.time.to_index().map(lambda t: t.replace(day=1, hour=0))
 
@@ -62,14 +61,28 @@ def preprocessed(ds, modelType='', startdate=None, enddate=None, variableType=No
         ds = ds.transpose('lat', 'lon', 'time')
         return ds
 
-    def unknown_preprocess(ds):
+    def INM_preprocess(ds):
+        return MRI_preprocess(ds)
 
-        raise ValueError(
-            'The model cannot be preprocessed. Please do preprocessing by yourself')
+    def GISS_preprocess(ds):
+        return MRI_preprocess(ds)
+
+    def unknown_preprocess(ds):
+        try:
+            ds = MRI_preprocess(ds)
+        except Exception:
+
+            raise ValueError(
+                'The model cannot be preprocessed. Please do preprocessing by yourself')
+        else:
+            # print(ds)
+            print('had better not preprocess by this')
 
         return ds
 
     model_list = {'JRA': JRA_preprocess,
+                  'INM': INM_preprocess,
+                  'GISS': GISS_preprocess,
                   'MRI': MRI_preprocess,
                   'MIROC6': MIROC6_preprpocess,
                   'CNRM-ESM2-1': CNRM_ESM_preprocess}
@@ -80,6 +93,9 @@ def preprocessed(ds, modelType='', startdate=None, enddate=None, variableType=No
 
         if variableType:
             ds = ds[[variableType]]
+
+        if drop:
+            ds = droppingVariablesOfds(ds)
         # print(ds)
 
         ds = model_list.get(modelType, unknown_preprocess)(ds)
@@ -115,7 +131,7 @@ def findNNearest(grid_ds, value_da, N=4):
 
     targets = np.vstack(list(zip(Xt.ravel(), Yt.ravel())))
 
-    _, indexes = kd_tree.query(targets, k=3*N)
+    _, indexes = kd_tree.query(targets, k=30*N)
     '''
     found 10*N nearest in points by lat and lon for each target
     indexes.shape is (len(targets), k)
@@ -219,50 +235,77 @@ def getName(path):
 def main(filepath, grid_ds, write=False):
 
     modelType = getName(filepath)
+    # print(modelType)
 
     value_ds = xr.open_dataset(filepath, engine='h5netcdf')
     value_ds = preprocessed(value_ds, modelType, STARTDATE, ENDDATE)
-    print(value_ds)
-    return
     value_da = value_ds.to_array()
 
     res = IDWInterpolation(grid_ds, value_da)
     res = res.to_dataset('variable')
 
+    write_dir = f'../interpolated_gcms_mon/{modelType}/'
+
     if write:
 
-        res.to_netcdf(
-            f'/home/waterlab/Wang/bachelor_thesis/interpolated_gcms_mon/{modelType}/{modelType}_new.nc', engine='h5netcdf')
+        if not os.path.exists(write_dir):
+            os.makedirs(write_dir)
+
+        res.to_netcdf(write_dir+f'{modelType}.nc', engine='h5netcdf')
 
     return res
 
 
+def checking(t, variable):
+    '''
+    Let's check some samples of the interpotaion result manually
+
+    '''
+    # import cartopy.crs as ccrs
+    # fig, axis = plt.subplots(2)
+
+    write_dir = '../interpolated_gcms_mon/INM/INM.nc'
+    write_ds = xr.open_dataset(write_dir, engine='h5netcdf')
+    # write_ds = write_ds.to_array()
+    w = write_ds[variable].isel(time=t)
+
+    # plt.title('sdfsfe')
+    # write_ds['vas'].isel(time=t).plot(ax=axis[1, 1])
+
+    value_ds = xr.open_dataset(gcm_dir+'INM/INM.nc', engine='h5netcdf')
+    value_ds = preprocessed(value_ds, 'INM', STARTDATE, ENDDATE)
+    value_ds = droppingVariablesOfds(value_ds).drop('height')
+    v = value_ds[variable].isel(time=t)
+
+    xr.plot.pcolormesh(w, vmax=9, vmin=-9, cmap='RdBu_r',
+                       xlim=(95, 180), ylim=(-10, 60), figsize=(8, 6))
+
+    # value_ds['vas'].isel(time=t).plot(ax=axis[1, 0])
+    plt.title('Interpolated')
+    plt.show()
+
+
 if __name__ == '__main__':
 
-    gcm_dir = '/home/waterlab/Wang/bachelor_thesis/downloads/GCMs/'
+    gcm_dir = '../downloads/GCMs/'
 
-    grid_dir = '/home/waterlab/Wang/bachelor_thesis/downloads/JRA/rawdownloads/uas/anl_mdl.033_ugrd.reg_tl319.196101_196112.wang528867'
+    grid_dir = '../downloads/JRA/JRA.nc'
 
-    grid_ds = xr.open_dataset(grid_dir, engine='cfgrib')
-    grid_ds = preprocessed(grid_ds, 'JRA')
-    grid_ds = droppingVariablesOfds(grid_ds)
+    grid_ds = xr.open_dataset(grid_dir, engine='h5netcdf')['uas']
 
-    for filepath in glob(gcm_dir+'*/*.nc'):
+    # grid_ds = preprocessed(grid_ds, 'JRA')
+    # grid_ds = droppingVariablesOfds(grid_ds)
 
-        if getName(filepath) == 'MRI':
-            continue
+    # for filepath in glob(gcm_dir+'*/*.nc'):
 
-        res = main(filepath, grid_ds, write=True)
-        print(res)
+    #     modelType = getName(filepath)
+    #     print(filepath)
 
-    t = 0
+    #     if os.path.exists(f'../interpolated_gcms_mon/{modelType}/{modelType}_new.nc'):
+    #         continue
 
-    write_dir = '/home/waterlab/Wang/bachelor_thesis/interpolated_gcms_mon/MIROC6'
-    MIROC6 = xr.open_dataset(write_dir + '/MIROC6_new.nc',
-                             engine="h5netcdf")[['uas', 'vas']]
-
-    # value_ds = xr.open_dataset(gcm_dir+'MIROC6/MIROC6.nc', engine='h5netcdf')
-    # value_ds = preprocessed(value_ds, 'MIROC6', STARTDATE, ENDDATE)
-
-    # value_ds = droppingVariablesOfds(value_ds)
-    # value_ds.uas.isel(time=t).plot()
+    # res = main(filepath, grid_ds, write=True)
+    # print(res)
+    checking(24, 'uas')
+    # for i in range(24):
+    #     checking(, 'uas')
