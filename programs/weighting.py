@@ -25,8 +25,8 @@ np.set_printoptions(threshold=False)
 STARTDATE = '1960-01-01'
 ENDDATE = '2014-12-31'
 
-Evaluating_indices = ['modelName', 'startDate',
-                      'endDate', 'mean', 'stdev', 'interval', 'ci99', 'ci95', 'bias', 'R', 'RMSE', 'RSD', 'eci99',  'eci95']
+Evaluating_Indices = ['modelName', 'startDate',
+                      'endDate', 'mean', 'stdev', 'max', 'min', 'interval', '5p', '25p', '50p', '75p', '95p', 'bias', 'e5p', 'e25p', 'e50p', 'e75p', 'e95p', 'ae5p', 'ae25p', 'ae50p', 'ae75p', 'ae95p', 'R', 'RMSE', 'RSD', 'eci99a',  'eci99b', 'eci95a',  'eci95b']
 
 JRA_dir = '../downloads/JRA/'
 
@@ -70,7 +70,7 @@ class ModelPair():
         Parameters
         ----------
         referModel : xr.DataArray
-                    make sure the order of axises is the same.
+                    make sure the order of axises are the same.
 
         Model : xr.DataArray
 
@@ -84,11 +84,12 @@ class ModelPair():
         self.startDate = model.time.to_index()[0].strftime('%Y-%m')
         self.endDate = model.time.to_index()[-1].strftime('%Y-%m')
         self.error = np.array(self.model-self.refer)
+        self.AE = abs(self.error)
 
-        if model.name:
-            self.modelName = model.name
-        elif givenModelName:
+        if givenModelName:
             self.modelName = givenModelName
+        elif model.name:
+            self.modelName = model.name
         else:
             try:
                 self.modelName = str(model.modelName.values)
@@ -102,7 +103,7 @@ class ModelPair():
         return np.std(self.model)
 
     def interval(self):
-        return (self.model.max(), self.model.min())
+        return self.model.max() - self.model.min()
 
     def R(self):
         return np.corrcoef(self.refer, self.model)[0][1]
@@ -129,6 +130,10 @@ class ModelPair():
         # print(_)
         return _
 
+    def percentiles(self, data, ps: list):
+
+        return [np.percentile(data, p) for p in ps]
+
     def indices(self):
         '''
         Note that the Evaluating_indices must be a subset of this dictionary.
@@ -140,51 +145,44 @@ class ModelPair():
             'mean': self.mean(),
             'stdev': self.stdev(),
             'interval': self.interval(),
-            'ci99': self.confidenceInterval(self.model, 0.99),
-            'ci95': self.confidenceInterval(self.model, 0.95),
+            'ci99a': self.confidenceInterval(self.model, 0.99)[0],
+            'ci99b': self.confidenceInterval(self.model, 0.99)[0],
+            'ci95a': self.confidenceInterval(self.model, 0.95)[0],
+            'ci95b': self.confidenceInterval(self.model, 0.95)[1],
             'bias': self.bias(),
             'R': self.R(),
             "RMSE": self.RMSE(),
             'RSD': self.RSD(),
-            'eci99': self.confidenceInterval(self.error, 0.99),
-            'eci95': self.confidenceInterval(self.error, 0.95),
+            'eci99a': self.confidenceInterval(self.error, 0.99)[0],
+            'eci95a': self.confidenceInterval(self.error, 0.95)[0],
+            'eci99b': self.confidenceInterval(self.error, 0.99)[1],
+            'eci95b': self.confidenceInterval(self.error, 0.95)[1],
+            'max': self.model.max(),
+            'min': self.model.min(),
+
+
         }
+        ps = [5, 25, 50, 75, 95]
+        keys = [str(p)+'p' for p in ps]
+        ekeys = ['e'+k for k in keys]
+        aekeys = ['ae'+k for k in keys]
 
-        res = [dictionary[Evaluating_indices[0]]]
+        values = self.percentiles(self.model, ps) + \
+            self.percentiles(self.error, ps) + self.percentiles(self.AE, ps)
 
-        for key in Evaluating_indices[1:]:
+        new = {k: v for k, v in zip(keys+ekeys+aekeys, values)}
 
-            res.append(dictionary[key])
+        dictionary.update(new)
+
+        # print(dictionary)
+
+        res = [dictionary[key] for key in Evaluating_Indices]
 
         return res
 
 
 def weightOfMean(n):
     return np.array([1/n]*n)
-
-
-def getVarToDim(ds):
-    '''
-
-
-    Parameters
-    ----------
-    ds : xarray.Dataset which have multiple variables
-
-    Returns
-    -------
-    res : xarray.DataArray
-          only as one variable named 'variables'.
-
-          Increased a dimension. different coordinate in the new dimension shows different variables in the old dataset.
-
-    '''
-
-    newdim = pd.Index([str(variable) for variable in ds], name='var')
-
-    res = xr.concat([ds[variable] for variable in ds], newdim)
-    res = res.rename('variables')
-    return res
 
 
 def normalized(data):
@@ -308,6 +306,8 @@ class OptimizedWeighting():
         # prediction = weights @ X
         P = projectionMatrix(feasibleSpace(dim))
 
+        reached_bound = 0
+
         for epoch in range(iters):
             shuffledIdx = np.random.permutation(len(Y))
             X_shuffled = np.array(X[:, shuffledIdx])
@@ -326,12 +326,51 @@ class OptimizedWeighting():
                 projectedDescent = P @ Descent
 
                 weights = weights-projectedDescent
+                '''
+                checking for bound constrains
+                '''
+                if weights.min() > 0:
+                    reached_bound = 0
+                else:
+                    if reached_bound >= 4:
+                        idx = np.argmin(weights)
+                        weights = np.array(weights) + projectedDescent * \
+                            (-weights.min()/projectedDescent[idx])
+
+                        weights = weights[:idx] + weights[idx+1:]
+                        weights = weights/sum(weights)
+                        dim -= 1
+                        P = projectionMatrix(feasibleSpace(dim))
+                        self.models = self.models[np.nonzero(self.weights)]
+                        # to decrease the dimension
+
+                        self.weights[self.weights != 0][idx]
+                        nonzero_idx = np.nonzero(self.weights)
+                        real_idx = nonzero_idx(idx)
+                        self.weights[real_idx] = 0
+                        # to find the idx-th nonzero element in self.weights
+                        # cannot use a[a!=0][idx]=0
+
+                        assert np.count_nonzero(self.weights) == dim
+                        self.models = self.models[np.nonzero(self.weights)]
+
+                    else:
+                        weights = np.array(weights) + projectedDescent * \
+                            (-weights.min() /
+                             projectedDescent[np.argmin(weights)])
+
+                        '''
+                        roll back the weights so that the min of weights to 0
+                        '''
+                        reached_bound += 1
 
             costHistory[epoch] = MSE(Y, weights@X)
             print(epoch, ': ', costHistory[epoch])
-            print(weights)
+            assert np.array(np.nonzero(self.weights)).size == len(weights)
+            self.weights[self.weights != 0] = weights
+            print(self.weights)
 
-        return prediction, weights, [c for c in costHistory[::-1] if c != 0][0]
+        return prediction, self.weights, [c for c in costHistory[::-1] if c != 0][0]
 
     def getWeights_BGD(self):
         print('start BGD...')
@@ -567,6 +606,10 @@ def compare(referData, modelData):
 
 
 def evaluate(referData, modelData):
+    '''
+
+
+    '''
 
     def split(a, n):
         '''
@@ -606,7 +649,7 @@ def evaluate(referData, modelData):
         weights_rea = method.getWeights()
 
         x_optmini = sum([w*x for w, x in zip(weights_optmini, x_test)])
-        x_optmini.name = 'optmini'
+        x_optmini.name = 'MEW'
         # x_opt = sum([w*x for w, x in zip(weights_opt, x_test)])
         # x_opt.name = 'opt'
         x_rea = sum([w*x for w, x in zip(weights_rea, x_test)])
@@ -640,14 +683,13 @@ def evaluate(referData, modelData):
             if cnt > 1:
                 break
 
-    output = []
-
     for r in result:
         print(r)
 
+    output = []
     for i in range(n_models):
 
-        all_indices = Evaluating_indices + \
+        all_indices = Evaluating_Indices + \
             [f'w{i+1}' for i in range(len(modelData))]
 
         modelres = pd.DataFrame(
@@ -660,8 +702,8 @@ def evaluate(referData, modelData):
 
 def test():
     '''
-    for testing and checking runtime at the start of this program
-    now I dont use this at all
+    for testing and checking runtime at the start of this program.
+    now I dont use this at all.
     '''
 
     time = pd.date_range('1970-01-01', freq='MS', periods=12*45)
@@ -676,7 +718,7 @@ def test():
             'time': (['time'], time)
         })
 
-    y = getVarToDim(y)
+    y = y.to_array()
 
     # print(y.isel(lat=0, lon=0).data.ravel()[::10])
 
@@ -694,8 +736,10 @@ def main():
     '''
     ======================= settings ==============================
     '''
+    testing = True
+    testing = False
 
-    ALL_VARIABLE = ['uas', 'vas']
+    # ALL_VARIABLEs == ['uas', 'vas']
     FOCUSING_VARIABLE = ['vas']
 
     LATBOUND = [-10, 60]
@@ -710,9 +754,15 @@ def main():
     LONBOUND = [95,180]
     '''
 
-    FILENAME = 'vas'
+    FILENAME = 'V'
 
     HAVEFAKE = False
+
+    np.random.seed(42)
+
+    # FORMAT == 'xlsx'
+
+    FORMAT = 'xlsx'
 
     '''
     ========================= Preprocessing ===================================
@@ -770,20 +820,29 @@ def main():
     #     print(p.indices())
     # assert False
 
-    write_dir = f'../output/{FILENAME}.xlsx'
-
     '''
     ==================== Process and Write ========================
     '''
-
     output = evaluate(all_models[0], all_models[1:])
 
-    with open(write_dir, 'w+'):
-        pass
+    if FORMAT == 'xlsx':
 
-    with pd.ExcelWriter(write_dir, mode='w') as writer:
-        for modelres in output:
-            modelres.to_excel(writer, sheet_name=f'{modelres.iloc[0,0]}')
+        write_dir = f'../output/{FILENAME}.xlsx'
+
+        with open(write_dir, 'w+'):
+            pass
+
+        with pd.ExcelWriter(write_dir, mode='w') as writer:
+            for modelres in output:
+                modelres.to_excel(writer, sheet_name=f'{modelres.iloc[0,0]}')
+
+    elif FORMAT == 'nc':
+
+        nc = xr.Dataset.from_dataframe(output[0])
+        print(nc)
+        assert False
+
+        write_dir = f'../output/{FILENAME}.nc'
 
 
 if __name__ == "__main__":
