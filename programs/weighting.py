@@ -18,6 +18,8 @@ import os
 from glob import glob
 import sys
 np.set_printoptions(threshold=False)
+
+
 # import datetime
 # from scipy.stats import entropy
 
@@ -32,7 +34,6 @@ JRA_dir = '../downloads/JRA/'
 
 model_dir = "../interpolated_gcms_mon/"
 
-testing = True
 testing = False
 
 
@@ -81,6 +82,11 @@ class ModelPair():
         self.refer = referModel.ravel() if type(
             referModel) is np.ndarray else referModel.data.ravel()
         self.model = model.ravel() if type(model) is np.ndarray else model.data.ravel()
+
+        # self.refer = self.refer[np.logical_not(np.isnan(self.refer))]
+
+        # self.model = self.model[:, np.logical_not(np.isnan(self.model[0]))]
+
         self.startDate = model.time.to_index()[0].strftime('%Y-%m')
         self.endDate = model.time.to_index()[-1].strftime('%Y-%m')
         self.error = np.array(self.model-self.refer)
@@ -208,7 +214,14 @@ class OptimizedWeighting():
         '''
 
         self.refer = referData.data.ravel()
-        self.models = np.array([model.data.ravel() for model in modelData])
+
+        self.models = np.array([model.data.ravel()
+                               for model in modelData])
+
+        # self.refer = self.refer[np.logical_not(np.isnan(self.refer))]
+
+        # self.models = self.models[:, np.logical_not(np.isnan(self.models[0]))]
+
         self.weights = np.array([1/len(modelData)]*len(modelData))
         self.alpha = alpha
 
@@ -321,38 +334,60 @@ class OptimizedWeighting():
                 yi = Y_shuffled[i: i+batchSize]
 
                 alpha = learningSchedule(t)
+                # print(xi.shape, weights.shape)
                 prediction = weights @ xi
                 Descent = (alpha/len(Y)) * (xi@(prediction-yi))
                 projectedDescent = P @ Descent
 
                 weights = weights-projectedDescent
                 '''
-                checking for bound constrains
+                checking for bound constraints
                 '''
                 if weights.min() > 0:
                     reached_bound = 0
                 else:
-                    if reached_bound >= 4:
+                    if reached_bound >= 5:
+
                         idx = np.argmin(weights)
-                        weights = np.array(weights) + projectedDescent * \
-                            (-weights.min()/projectedDescent[idx])
+                        rollback_ratio = (-weights.min()/projectedDescent[idx])
+                        assert 1 >= rollback_ratio >= 0
+                        weights = np.array(weights) + \
+                            projectedDescent * rollback_ratio
 
-                        weights = weights[:idx] + weights[idx+1:]
+                        weights[idx] = 0
                         weights = weights/sum(weights)
-                        dim -= 1
-                        P = projectionMatrix(feasibleSpace(dim))
-                        self.models = self.models[np.nonzero(self.weights)]
-                        # to decrease the dimension
+                        nonzero_idx = np.flatnonzero(weights)
 
-                        self.weights[self.weights != 0][idx]
-                        nonzero_idx = np.nonzero(self.weights)
-                        real_idx = nonzero_idx(idx)
-                        self.weights[real_idx] = 0
-                        # to find the idx-th nonzero element in self.weights
-                        # cannot use a[a!=0][idx]=0
+                        P_temp = projectionMatrix(feasibleSpace(dim-1))
+                        # w_temp = weights[nonzero_idx]
+                        # w_temp -= P_temp@Descent[nonzero_idx]
 
-                        assert np.count_nonzero(self.weights) == dim
-                        self.models = self.models[np.nonzero(self.weights)]
+                        weights[nonzero_idx] = weights[nonzero_idx] - \
+                            P_temp@Descent[nonzero_idx] * (1-rollback_ratio)
+
+                        # weights = np.concatenate(
+                        #     (weights[:idx],  weights[idx+1:]))
+                        # print(weights)
+                        # weights = weights/sum(weights)
+                        # print(weights)
+                        # dim -= 1
+                        # P = projectionMatrix(feasibleSpace(dim))
+
+                        # # to decrease the dimension
+
+                        # nonzero_idx = np.flatnonzero(self.weights)
+                        # real_idx = nonzero_idx[idx]
+                        # self.weights[real_idx] = 0
+                        # # to find the idx-th nonzero element in self.weights
+                        # # cannot use a[a!=0][idx]=0
+
+                        # assert np.count_nonzero(self.weights) == dim
+                        # print(X.shape, X_shuffled.shape, xi.shape)
+                        # nonzero_idx = np.flatnonzero(self.weights)
+                        # X = X[nonzero_idx]
+                        # X_shuffled = X_shuffled[nonzero_idx]
+                        # xi = xi[nonzero_idx]
+                        # print(X.shape, X_shuffled.shape, xi.shape)
 
                     else:
                         weights = np.array(weights) + projectedDescent * \
@@ -366,11 +401,12 @@ class OptimizedWeighting():
 
             costHistory[epoch] = MSE(Y, weights@X)
             print(epoch, ': ', costHistory[epoch])
-            assert np.array(np.nonzero(self.weights)).size == len(weights)
-            self.weights[self.weights != 0] = weights
-            print(self.weights)
+            # assert self.weights[self.weights != 0].size == len(weights)
+            # self.weights[self.weights != 0] = weights
+            # print(self.weights)
+            print(weights)
 
-        return prediction, self.weights, [c for c in costHistory[::-1] if c != 0][0]
+        return prediction, weights, [c for c in costHistory[::-1] if c != 0][0]
 
     def getWeights_BGD(self):
         print('start BGD...')
@@ -476,8 +512,6 @@ class REAWeighting():
 
         B = getB(self)
         self.epsilon = getEpsilon(self)
-        # print(B)
-        # print(self.epsilon)
 
         def getRB(self):
             def getRB_i(B_i):
@@ -485,15 +519,11 @@ class REAWeighting():
                 RB_i_z = xr.where(RB_i_z < 1, RB_i_z, 1)
                 RB_i = np.prod(RB_i_z.data)
 
-                # print('\n\n\n\n', RB_i)
-                # print(RB_i)
-
                 return RB_i
 
             return list(map(getRB_i, B))
 
         self.RB = getRB(self)
-        print(self.RB)
 
     def _getWeights(self):
 
@@ -629,15 +659,18 @@ def evaluate(referData, modelData):
     time = referData.time.to_index()
     result = np.array([])
     cnt = 0
+
     for p, testPeriod in enumerate(split(time, n_splits)):
 
         rest = [timeStep for timeStep in time if timeStep not in testPeriod]
 
         y_test = referData.sel(time=testPeriod)
-        x_test = [model.sel(time=testPeriod) for model in modelData]
+        x_test = [modelData.sel(modelName=name, time=testPeriod)
+                  for name in modelData.modelName]
 
         y_weight = referData.sel(time=rest)
-        x_weight = [model.sel(time=rest) for model in modelData]
+        x_weight = [modelData.sel(modelName=name, time=rest)
+                    for name in modelData.modelName]
 
         method = OptimizedWeighting(
             y_weight, x_weight, iters=30, initializing_iters=1)
@@ -736,17 +769,15 @@ def main():
     '''
     ======================= settings ==============================
     '''
-    testing = True
-    testing = False
 
     # ALL_VARIABLEs == ['uas', 'vas']
-    FOCUSING_VARIABLE = ['vas']
+    FOCUSING_VARIABLE = ['uas', 'vas']
 
     LATBOUND = [-10, 60]
     LONBOUND = [95, 180]
 
-    # LATBOUND = [-10, 60]
-    # LONBOUND = [120, 152]
+    LATBOUND = [28, 60]
+    LONBOUND = [95, 122]
 
     '''
     all domain:
@@ -754,7 +785,7 @@ def main():
     LONBOUND = [95,180]
     '''
 
-    FILENAME = 'V'
+    FILENAME = 'SL'
 
     HAVEFAKE = False
 
